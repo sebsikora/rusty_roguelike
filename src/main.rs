@@ -1,6 +1,6 @@
 extern crate tcod;
 extern crate rand;
-
+extern crate hsl;
 
 use std::cmp;
 
@@ -8,7 +8,6 @@ use tcod::console::*;
 use tcod::colors::{self, Color};
 
 use rand::*;
-
 
 // Define some constants.
 const SCREEN_WIDTH: i32 = 80;
@@ -18,8 +17,10 @@ const LIMIT_FPS: i32 = 20;
 const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 45;
 
-const COLOR_DARK_WALL: Color = Color { r: 0, g: 100, b: 0 };
-const COLOR_DARK_GROUND: Color = Color { r: 50, g: 150, b: 50 };
+const COLOR_DARK_WALL: (f64, f64, f64) = (120.0, 1.0, 0.196);
+const COLOR_DARK_GROUND: (f64, f64, f64) = (120.0, 0.333, 0.5);
+const COLOR_PLAYER: (f64, f64, f64) = (0.0, 0.0, 1.0);
+const COLOR_CAT_BUDDY: (f64, f64, f64) = (22.0, 1.0, 0.51);
 
 const ROOM_MAX_SIZE: i32 = 10;
 const ROOM_MIN_SIZE: i32 = 6;
@@ -35,16 +36,19 @@ type Map = Vec<Vec<Tile>>;
 struct Tile {
     blocked: bool,
     block_sight: bool,
+    color_h_val: f64,
+    color_s_val: f64,
+    color_l_val: f64,
 }
 
 // Define Tile object methods.
 impl Tile {
     pub fn empty() -> Self {
-        Tile{blocked: false, block_sight: false}
+        Tile{blocked: false, block_sight: false, color_h_val: COLOR_DARK_GROUND.0, color_s_val: COLOR_DARK_GROUND.1, color_l_val: COLOR_DARK_GROUND.2}
     }
     
     pub fn wall() -> Self {
-        Tile{blocked: true, block_sight: true}
+        Tile{blocked: true, block_sight: true, color_h_val: COLOR_DARK_WALL.0, color_s_val: COLOR_DARK_WALL.1, color_l_val: COLOR_DARK_WALL.2}
     }
 }
 
@@ -85,16 +89,18 @@ struct Object {
     y: i32,
     char: char,
     color: Color,
+    hsl: (f64, f64, f64),
 }
 
 // Here we define the 'Object' object methods.
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, color: Color) -> Self {
+    pub fn new(x: i32, y: i32, char: char, color: Color, hsl: (f64, f64, f64)) -> Self {
         Object {
             x: x,
             y: y,
             char: char,
             color: color,
+            hsl: hsl,
         }
     }
     
@@ -107,8 +113,9 @@ impl Object {
     }
     
     // Draw object in chosen terminal.
-    pub fn draw(&self, con: &mut Console) {
-        con.set_default_foreground(self.color);
+    pub fn draw(&self, con: &mut Console, colorizer: fn((f64, f64, f64)) -> Color) {
+        //con.set_default_foreground(self.color);
+        con.set_default_foreground(colorizer (self.hsl));
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
     
@@ -125,6 +132,9 @@ fn create_room(room: Rect, map: &mut Map) {
         for y in (room.y1 + 1)..room.y2 {
             map[x as usize][y as usize].block_sight = false;
             map[x as usize][y as usize].blocked = false;
+            map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
+            map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
+            map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
         }
     }
 }
@@ -134,6 +144,9 @@ fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
     for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
         map[x as usize][y as usize].block_sight = false;
         map[x as usize][y as usize].blocked = false;
+        map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
+        map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
+        map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
     }
 }
 
@@ -142,6 +155,9 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
         map[x as usize][y as usize].block_sight = false;
         map[x as usize][y as usize].blocked = false;
+        map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
+        map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
+        map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
     }
 }
 
@@ -243,22 +259,39 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &Ma
     // Draw all world tiles.
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
-            let wall = map[x as usize][y as usize].block_sight;
-            if wall {
-                con.set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
-            } else {
-                con.set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
-            }
+            
+            let wall = map[x as usize][y as usize];
+            con.set_char_background(x, y, return_rgb_colour((wall.color_h_val, wall.color_s_val, wall.color_l_val)), BackgroundFlag::Set);
+            
+            //~let wall = map[x as usize][y as usize].block_sight;
+            //~if wall {
+                //~con.set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
+            //~} else {
+                //~con.set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
+            //~}
         }
     }
     
     // Draw all world objects.
     for object in objects {
-        object.draw(con);
+        object.draw(con, return_rgb_colour);
     }
     
     // Blit the composition terminal contents into the root terminal.
     blit(con, (0,0), (SCREEN_WIDTH, SCREEN_HEIGHT), root, (0,0), 1.0, 1.0);
+}
+
+
+fn return_rgb_colour(hsl_val: (f64, f64, f64)) -> Color {
+    use hsl::*;
+    
+    let rgb_color = HSL { h: hsl_val.0, s: hsl_val.1, l: hsl_val.2 }.to_rgb();
+    
+    let r_val = rgb_color.0;
+    let g_val = rgb_color.1;
+    let b_val = rgb_color.2;
+    
+    Color { r: r_val, g: g_val, b: b_val }
 }
 
 
@@ -281,8 +314,8 @@ fn main() {
     let (map, (player_x, player_y)) = make_map();
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(player_x, player_y, '@', colors::WHITE);
-    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', colors::YELLOW);
+    let player = Object::new(player_x, player_y, '@', colors::WHITE, COLOR_PLAYER);
+    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', colors::YELLOW, COLOR_CAT_BUDDY);
     
     let mut objects = [player, npc];
     

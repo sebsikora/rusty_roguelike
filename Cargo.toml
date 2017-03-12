@@ -9,3 +9,7 @@ git = "https://github.com/tomassedovic/tcod-rs.git"
 [dependencies.rand]
 rand = "*"
 
+[dependencies.hsl]
+hsl = "0.1.1"
+
+
