@@ -5,7 +5,7 @@ extern crate hsl;
 use std::cmp;
 
 use tcod::console::*;
-use tcod::colors::{self, Color};
+use tcod::colors::*;
 
 use rand::*;
 
@@ -36,19 +36,17 @@ type Map = Vec<Vec<Tile>>;
 struct Tile {
     blocked: bool,
     block_sight: bool,
-    color_h_val: f64,
-    color_s_val: f64,
-    color_l_val: f64,
+    color_hsl: (f64, f64, f64),
 }
 
 // Define Tile object methods.
 impl Tile {
     pub fn empty() -> Self {
-        Tile{blocked: false, block_sight: false, color_h_val: COLOR_DARK_GROUND.0, color_s_val: COLOR_DARK_GROUND.1, color_l_val: COLOR_DARK_GROUND.2}
+        Tile{blocked: false, block_sight: false, color_hsl: COLOR_DARK_GROUND}
     }
     
     pub fn wall() -> Self {
-        Tile{blocked: true, block_sight: true, color_h_val: COLOR_DARK_WALL.0, color_s_val: COLOR_DARK_WALL.1, color_l_val: COLOR_DARK_WALL.2}
+        Tile{blocked: true, block_sight: true, color_hsl: COLOR_DARK_WALL}
     }
 }
 
@@ -88,18 +86,16 @@ struct Object {
     x: i32,
     y: i32,
     char: char,
-    color: Color,
     hsl: (f64, f64, f64),
 }
 
 // Here we define the 'Object' object methods.
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, color: Color, hsl: (f64, f64, f64)) -> Self {
+    pub fn new(x: i32, y: i32, char: char, hsl: (f64, f64, f64)) -> Self {
         Object {
             x: x,
             y: y,
             char: char,
-            color: color,
             hsl: hsl,
         }
     }
@@ -114,7 +110,6 @@ impl Object {
     
     // Draw object in chosen terminal.
     pub fn draw(&self, con: &mut Console, colorizer: fn((f64, f64, f64)) -> Color) {
-        //con.set_default_foreground(self.color);
         con.set_default_foreground(colorizer (self.hsl));
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
@@ -132,9 +127,7 @@ fn create_room(room: Rect, map: &mut Map) {
         for y in (room.y1 + 1)..room.y2 {
             map[x as usize][y as usize].block_sight = false;
             map[x as usize][y as usize].blocked = false;
-            map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
-            map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
-            map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
+            map[x as usize][y as usize].color_hsl = COLOR_DARK_GROUND;
         }
     }
 }
@@ -144,9 +137,7 @@ fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
     for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
         map[x as usize][y as usize].block_sight = false;
         map[x as usize][y as usize].blocked = false;
-        map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
-        map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
-        map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
+        map[x as usize][y as usize].color_hsl = COLOR_DARK_GROUND;
     }
 }
 
@@ -155,9 +146,7 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
         map[x as usize][y as usize].block_sight = false;
         map[x as usize][y as usize].blocked = false;
-        map[x as usize][y as usize].color_h_val = COLOR_DARK_GROUND.0;
-        map[x as usize][y as usize].color_s_val = COLOR_DARK_GROUND.1;
-        map[x as usize][y as usize].color_l_val = COLOR_DARK_GROUND.2;
+        map[x as usize][y as usize].color_hsl = COLOR_DARK_GROUND;
     }
 }
 
@@ -260,8 +249,8 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &Ma
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
             
-            let wall = map[x as usize][y as usize];
-            con.set_char_background(x, y, return_rgb_colour((wall.color_h_val, wall.color_s_val, wall.color_l_val)), BackgroundFlag::Set);
+            let wall_color = map[x as usize][y as usize].color_hsl;
+            con.set_char_background(x, y, return_rgb_colour(wall_color), BackgroundFlag::Set);
             
             //~let wall = map[x as usize][y as usize].block_sight;
             //~if wall {
@@ -283,6 +272,7 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &Ma
 
 
 fn return_rgb_colour(hsl_val: (f64, f64, f64)) -> Color {
+    use tcod::colors::*;
     use hsl::*;
     
     let rgb_color = HSL { h: hsl_val.0, s: hsl_val.1, l: hsl_val.2 }.to_rgb();
@@ -314,8 +304,8 @@ fn main() {
     let (map, (player_x, player_y)) = make_map();
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(player_x, player_y, '@', colors::WHITE, COLOR_PLAYER);
-    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', colors::YELLOW, COLOR_CAT_BUDDY);
+    let player = Object::new(player_x, player_y, '@', COLOR_PLAYER);
+    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', COLOR_CAT_BUDDY);
     
     let mut objects = [player, npc];
     
