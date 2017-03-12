@@ -26,15 +26,18 @@ const ROOM_MIN_SIZE: i32 = 6;
 const MAX_ROOMS: i32 = 30;
 
 
+// Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
 
 
+// Define a 'Tile' object.
 #[derive(Clone, Copy, Debug)]
 struct Tile {
     blocked: bool,
     block_sight: bool,
 }
 
+// Define Tile object methods.
 impl Tile {
     pub fn empty() -> Self {
         Tile{blocked: false, block_sight: false}
@@ -46,6 +49,7 @@ impl Tile {
 }
 
 
+// Define a 'Rect' rectangular room object.
 #[derive(Clone, Copy, Debug)]
 struct Rect {
     x1: i32,
@@ -54,6 +58,7 @@ struct Rect {
     y2: i32,
 }
 
+// Rect object methods.
 impl Rect {
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Rect { x1: x, y1: y, x2: x + w, y2: y + h }
@@ -73,7 +78,7 @@ impl Rect {
 }
 
 
-// Define our 'Object' structure, which will be used to represent all in-world objects.
+// Define our 'Object' object, which will be used to represent all in-world objects.
 #[derive(Debug)]
 struct Object {
     x: i32,
@@ -82,7 +87,7 @@ struct Object {
     color: Color,
 }
 
-// Here we define the 'Object' methods.
+// Here we define the 'Object' object methods.
 impl Object {
     pub fn new(x: i32, y: i32, char: char, color: Color) -> Self {
         Object {
@@ -93,6 +98,7 @@ impl Object {
         }
     }
     
+    // Move object by dx, dy.
     pub fn move_by(&mut self, dx: i32, dy: i32, map: &Map) {
         if !map[(self.x + dx) as usize][(self.y + dy) as usize].blocked {
             self.x += dx;
@@ -100,17 +106,20 @@ impl Object {
         }
     }
     
+    // Draw object in chosen terminal.
     pub fn draw(&self, con: &mut Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
     
+    // Erase object in chosen terminal.
     pub fn clear(&self, con: &mut Console) {
         con.put_char(self.x, self.y, ' ', BackgroundFlag::None);
     }
 }
 
 
+// Room creation function.
 fn create_room(room: Rect, map: &mut Map) {
     for x in (room.x1 + 1)..room.x2 {
         for y in (room.y1 + 1)..room.y2 {
@@ -120,6 +129,7 @@ fn create_room(room: Rect, map: &mut Map) {
     }
 }
 
+// 'Horizontal' tunnel creation function.
 fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
     for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
         map[x as usize][y as usize].block_sight = false;
@@ -127,6 +137,7 @@ fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
     }
 }
 
+// 'Vertical' tunnel creation function.
 fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
         map[x as usize][y as usize].block_sight = false;
@@ -134,23 +145,19 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     }
 }
 
+// Map creation function.
+//
+// Still to implement:
+//     - Need to detect when though we have not yet generated MAX_ROOMS rooms,
+//       there is insufficient empty space to create another room of at least 
+//       ROOM_MIN_SIZE^2 dimensions.
+
 fn make_map() -> (Map, (i32, i32)) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
     let mut starting_position = (0, 0);
-    
-    // Add a couple of test pillars.
-    //map[30][22] = Tile::wall();
-    //map[50][22] = Tile::wall();
-    
-    // Create a couple of test rectangular rooms.
-    //~let room1 = Rect::new(20, 15, 10, 15);
-    //~let room2 = Rect::new(50, 15, 10, 15);
-    //~create_room(room1, &mut map);
-    //~create_room(room2, &mut map);
-    //~create_h_tunnel(25, 55, 23, &mut map);
-    
+        
     let mut rooms = vec![];
     
     for _ in 0..MAX_ROOMS {
