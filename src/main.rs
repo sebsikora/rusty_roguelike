@@ -6,6 +6,7 @@ use std::cmp;
 
 use tcod::console::*;
 use tcod::colors::*;
+use tcod::map::{Map as FovMap, FovAlgorithm};
 
 use rand::*;
 
@@ -19,12 +20,18 @@ const MAP_HEIGHT: i32 = 45;
 
 const COLOR_DARK_WALL: (f64, f64, f64) = (120.0, 1.0, 0.196);
 const COLOR_DARK_GROUND: (f64, f64, f64) = (120.0, 0.333, 0.5);
+const FOV_LIGHTNESS_MODIFIER: f64 = 0.2;
+
 const COLOR_PLAYER: (f64, f64, f64) = (0.0, 0.0, 1.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (22.0, 1.0, 0.51);
 
 const ROOM_MAX_SIZE: i32 = 10;
 const ROOM_MIN_SIZE: i32 = 6;
 const MAX_ROOMS: i32 = 30;
+
+const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
+const FOV_LIGHT_WALLS: bool = true;
+const TORCH_RADIUS: i32 = 10;
 
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -244,26 +251,35 @@ fn handle_keys(root: &mut Root, player: &mut Object, map: &Map) -> bool {
 }
 
 
-fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &Map) {
-    // Draw all world tiles.
-    for y in 0..MAP_HEIGHT {
-        for x in 0..MAP_WIDTH {
-            
-            let wall_color = map[x as usize][y as usize].color_hsl;
-            con.set_char_background(x, y, return_rgb_colour(wall_color), BackgroundFlag::Set);
-            
-            //~let wall = map[x as usize][y as usize].block_sight;
-            //~if wall {
-                //~con.set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
-            //~} else {
-                //~con.set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
-            //~}
+fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &Map, fov_map: &mut FovMap, fov_recompute: bool) {
+    if fov_recompute {
+        // Recompte FOV if needed (ie - player moves).
+        let player = &objects[0];
+        fov_map.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+        
+        // Draw all world tiles.
+        for y in 0..MAP_HEIGHT {
+            for x in 0..MAP_WIDTH {
+                let visible = fov_map.is_in_fov(x, y);
+                //let blocks_sight = map[x as usize][y as usize].block_sight;
+                let mut wall_color = map[x as usize][y as usize].color_hsl;
+                if visible {
+                    wall_color.2 = wall_color.2 + FOV_LIGHTNESS_MODIFIER;
+                }
+                con.set_char_background(x, y, return_rgb_colour(wall_color), BackgroundFlag::Set);
+                //~let wall = map[x as usize][y as usize].block_sight;
+                //~if wall {
+                    //~con.set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
+                //~} else {
+                    //~con.set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
+                //~}
+            }
         }
-    }
-    
-    // Draw all world objects.
-    for object in objects {
-        object.draw(con, return_rgb_colour);
+        
+        // Draw all world objects.
+        for object in objects {
+            object.draw(con, return_rgb_colour);
+        }
     }
     
     // Blit the composition terminal contents into the root terminal.
@@ -294,11 +310,10 @@ fn main() {
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rust/libcod tutorial")
         .init();
+    tcod::system::set_fps(LIMIT_FPS);
     
     // Create our 'composition' terminal, off-screen, in which we will compose each frame.
     let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
-    
-    tcod::system::set_fps(LIMIT_FPS);
     
     // Instantiate a map.
     let (map, (player_x, player_y)) = make_map();
@@ -309,10 +324,26 @@ fn main() {
     
     let mut objects = [player, npc];
     
+    // Setup field of view map.
+    let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
+    for y in 0..MAP_HEIGHT {
+        for x in 0..MAP_WIDTH {
+            fov_map.set(x, y, 
+                        !map[x as usize][y as usize].block_sight,
+                        !map[x as usize][y as usize].blocked);
+        }
+    }
+    
+    // Set a ficticious previous player position to make sure that fov is calculated
+    // on first pass of game loop.
+    let mut previous_player_position = (-1, -1);
+    
     // Main world loop.
     while !root.window_closed() {
+        // Set flag to recompute fov is player position has changed.
+        let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
         // Draw all objects in objects list into composition terminal.
-        render_all(&mut root, &mut con, &objects, &map);
+        render_all(&mut root, &mut con, &objects, &map, &mut fov_map, fov_recompute);
         
         // Display the contents of the root terminal.
         root.flush();
@@ -325,6 +356,11 @@ fn main() {
         // Not sure why we need to do this, as we can pass the mutable objects[0] directly
         // within the handle_keys() function arguments (as shown in the commented version below).
         let player = &mut objects[0];
+        
+        // Prior to handling keystrokes (where player position may be changed)
+        // we grab the old player position.
+        previous_player_position = (player.x, player.y);
+        
         //let exit = handle_keys(&mut root, &mut objects[0]);
         let exit = handle_keys(&mut root, player, &map);
         
