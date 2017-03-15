@@ -33,6 +33,7 @@ const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const IN_FOV_LIGHTNESS_MODIFIER: f64 = 0.2;
 const AMBIENT_ILLUMINATION: i32 = 1000;
+const ILLUMINATION_MODULATION: f64 = 0.75;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -439,12 +440,13 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
                 }
                 
                 let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
+                let int_ray_brightness: i32 = field_ray_brightness.round() as i32;
                 
-                if !map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
-                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize] = field_ray_brightness.round() as i32;
+                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize] < int_ray_brightness {
+                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize] = int_ray_brightness;
                 }
+                
                 if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
-                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize] = field_ray_brightness.round() as i32;
                     continue 'target_x;
                 }
                 
@@ -456,7 +458,7 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
                 (field_travelled_dist_this_target.1).1 += field_dist_step_comps.1;
                 
                 // Reduce light intensity here...
-                let mut modulation_distance = (field_travelled_dist_this_target.0 * 0.5);
+                let mut modulation_distance = (field_travelled_dist_this_target.0 * ILLUMINATION_MODULATION);
                 if modulation_distance < 1.0 {
                     modulation_distance = 1.0;
                 }
@@ -516,6 +518,13 @@ fn main() {
     let mut previous_player_position = (-1, -1);
     
     // Generate master illumination map.
+    //
+    // This is a vector field of i32 illumination values. These are zeroed at the start of each
+    // FOV update, and then all light-sources (including the ambient illumination) are summed into
+    // it. Tiles and Objects are drawn with their 'lightness' value scaled according to this value
+    // at their position. The values are re-scaled from the native linear 0 -> 9999 to
+    // log 0.0 -> 1.0.
+    
     let mut light_field: LightField = vec![vec![0; MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
     // Main world loop.
