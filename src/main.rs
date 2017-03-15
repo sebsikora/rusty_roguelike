@@ -32,8 +32,8 @@ const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const IN_FOV_LIGHTNESS_MODIFIER: f64 = 0.2;
-const AMBIENT_ILLUMINATION: i32 = 1000;
-const ILLUMINATION_MODULATION: f64 = 0.75;
+const AMBIENT_ILLUMINATION: i32 = 100;
+const ILLUMINATION_MODULATION: f64 = 0.5;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -309,9 +309,12 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                 
                 // -- Code to turn linearised total brightness into a log brightness --
                 let lin_lum_val: f64 = ((light_field[x as usize][y as usize] as f64) + (AMBIENT_ILLUMINATION as f64)) / 9999.0;
-                let a = 0.08166865;
-                let b = 2.57916377;
-                let c = -0.07517411;
+                //~let a = 0.08166865;
+                //~let b = 2.57916377;
+                //~let c = -0.07517411;
+                let a = -1.01179495;
+                let b = -4.47099458;
+                let c = 1.01214152;
                 let mut log_lum_val: f64 = (((b * lin_lum_val).exp()) * a) + c;
                 if log_lum_val > 1.0 {
                     log_lum_val = 1.0;
@@ -354,9 +357,9 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
             
             // -- Code to turn linearised total brightness into a log brightness --
             let lin_lum_val: f64 = (((light_field[object.x as usize][object.y as usize] as f64) + (AMBIENT_ILLUMINATION as f64)) / 9999.0);
-            let a = 0.08166865;
-            let b = 2.57916377;
-            let c = -0.07517411;
+            let a = -1.01179495;
+            let b = -4.47099458;
+            let c = 1.01214152;
             let mut log_lum_val: f64 = (((b * lin_lum_val).exp()) * a) + c;
             if log_lum_val > 1.0 {
                 log_lum_val = 1.0;
@@ -496,9 +499,9 @@ fn main() {
     let (mut map, (player_x, player_y)) = make_map();
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(player_x, player_y, '@', COLOR_PLAYER, (true, 5000, (0, 0, 0)));
-    let light_bulb = Object::new(player_x+3, player_y+3, '*', COLOR_PLAYER, (true, 3000, (0, 0, 0)));
-    let light_bulb2 = Object::new(player_x-3, player_y-3, '*', COLOR_PLAYER, (true, 3000, (0, 0, 0)));
+    let player = Object::new(player_x, player_y, '@', COLOR_PLAYER, (true, 2000, (0, 0, 0)));
+    let light_bulb = Object::new(player_x+3, player_y+3, '*', COLOR_PLAYER, (true, 500, (0, 0, 0)));
+    let light_bulb2 = Object::new(player_x-3, player_y-3, '*', COLOR_PLAYER, (true, 500, (0, 0, 0)));
     let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', COLOR_CAT_BUDDY, (false, 0, (0, 0, 0)));
     
     let mut objects = [player, npc, light_bulb, light_bulb2];
