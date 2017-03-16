@@ -19,12 +19,12 @@ const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 45;
 
 const COLOR_WALL: (f64, f64, f64) = (0.509, 0.431, 0.196);
-const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.6, 0.0);
+const COLOR_GROUND: (f64, f64, f64) = (0.247, 0.471, 0.0039);
 
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
-const ROOM_MAX_SIZE: i32 = 15;
+const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 10;
 const MAX_ROOMS: i32 = 30;
 
@@ -33,7 +33,7 @@ const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
-const ILLUMINATION_MODULATION: f64 = 0.5;
+const ILLUMINATION_MODULATION: f64 = 1.0;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -130,7 +130,7 @@ impl Object {
             if dy < 0 {
                 self.direction = 4;
             }
-            println!("Direction {}", self.direction);
+            //println!("Direction {}", self.direction);
         }
     }
     
@@ -176,13 +176,13 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     }
 }
 
+
 // Map creation function.
 //
 // Still to implement:
 //     - Need to detect when though we have not yet generated MAX_ROOMS rooms,
 //       there is insufficient empty space to create another room of at least 
 //       ROOM_MIN_SIZE^2 dimensions.
-
 fn make_map() -> (Map, (i32, i32)) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
@@ -334,24 +334,7 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     let float_b_channel_output: f64 = wall_color.2 * ((light_field[x as usize][y as usize].2) + AMBIENT_ILLUMINATION.2);
                     
                     // -- Code to turn linearised total brightness into a log brightness --
-                    let a = -1.01179495;
-                    let b = -4.47099458;
-                    let c = 1.01214152;
-                    let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
-                    let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
-                    let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
-                    if corrected_r_channel_output > 1.0 {
-                        corrected_r_channel_output = 1.0;
-                    }
-                    if corrected_g_channel_output > 1.0 {
-                        corrected_g_channel_output = 1.0;
-                    }
-                    if corrected_b_channel_output > 1.0 {
-                        corrected_b_channel_output = 1.0;
-                    }
-                    display_color.0 = (corrected_r_channel_output * 255.0) as i32;
-                    display_color.1 = (corrected_g_channel_output * 255.0) as i32;
-                    display_color.2 = (corrected_b_channel_output * 255.0) as i32;
+                    display_color = correct_colors(&float_r_channel_output, &float_g_channel_output, &float_b_channel_output);
                     // --------------------------------------------------------------------
                     
                     *explored = true;
@@ -376,25 +359,9 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     let float_b_channel_output: f64 = wall_color.2 * not_visible_illumination.2;
                     
                     // -- Code to turn linearised total brightness into a log brightness --
-                    let a = -1.01179495;
-                    let b = -4.47099458;
-                    let c = 1.01214152;
-                    let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
-                    let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
-                    let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
-                    if corrected_r_channel_output > 1.0 {
-                        corrected_r_channel_output = 1.0;
-                    }
-                    if corrected_g_channel_output > 1.0 {
-                        corrected_g_channel_output = 1.0;
-                    }
-                    if corrected_b_channel_output > 1.0 {
-                        corrected_b_channel_output = 1.0;
-                    }
-                    display_color.0 = (corrected_r_channel_output * 255.0) as i32;
-                    display_color.1 = (corrected_g_channel_output * 255.0) as i32;
-                    display_color.2 = (corrected_b_channel_output * 255.0) as i32;
+                    display_color = correct_colors(&float_r_channel_output, &float_g_channel_output, &float_b_channel_output);
                     // --------------------------------------------------------------------
+                    
                 }
                 
                 if *explored {
@@ -419,25 +386,9 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
             let float_b_channel_output: f64 = ((object.color).2) * ((light_field[object.x as usize][object.y as usize].2) + AMBIENT_ILLUMINATION.2);
             
             // -- Code to turn linearised total brightness into a log brightness --
-            let a = -1.01179495;
-            let b = -4.47099458;
-            let c = 1.01214152;
-            let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
-            let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
-            let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
-            if corrected_r_channel_output > 1.0 {
-                corrected_r_channel_output = 1.0;
-            }
-            if corrected_g_channel_output > 1.0 {
-                corrected_g_channel_output = 1.0;
-            }
-            if corrected_b_channel_output > 1.0 {
-                corrected_b_channel_output = 1.0;
-            }
-            display_color.0 = (corrected_r_channel_output * 255.0) as i32;
-            display_color.1 = (corrected_g_channel_output * 255.0) as i32;
-            display_color.2 = (corrected_b_channel_output * 255.0) as i32;
+            display_color = correct_colors(&float_r_channel_output, &float_g_channel_output, &float_b_channel_output);
             // --------------------------------------------------------------------
+                    
             object.draw(con, Color { r: (display_color.0 as u8), g: (display_color.1 as u8), b: (display_color.2 as u8) });
         }
     }
@@ -446,6 +397,31 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
     blit(con, (0,0), (SCREEN_WIDTH, SCREEN_HEIGHT), root, (0,0), 1.0, 1.0);
 }
 
+fn correct_colors(float_r_channel_output: &f64, float_g_channel_output: &f64, float_b_channel_output: &f64) -> (i32, i32, i32) {
+    // -- Code to turn linearised total brightness into a log brightness --
+    let a = -1.01179495;
+    let b = -4.47099458;
+    let c = 1.01214152;
+    
+    let mut display_color: (i32, i32, i32) = (0, 0, 0);
+    let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
+    let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
+    let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
+    if corrected_r_channel_output > 1.0 {
+        corrected_r_channel_output = 1.0;
+    }
+    if corrected_g_channel_output > 1.0 {
+        corrected_g_channel_output = 1.0;
+    }
+    if corrected_b_channel_output > 1.0 {
+        corrected_b_channel_output = 1.0;
+    }
+    display_color.0 = (corrected_r_channel_output * 255.0) as i32;
+    display_color.1 = (corrected_g_channel_output * 255.0) as i32;
+    display_color.2 = (corrected_b_channel_output * 255.0) as i32;
+    
+    display_color
+}
 
 fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32), (i32, i32)) {
     let mut total_ray_count = 0;
@@ -487,7 +463,6 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
     let beam_sweep: f64 = object.light_source.2;
     
     // Determine angle modifier to set 'direction'.
-    //
     // This value is subtracted from the alpha angle calculated for each target tile, in effect rotating the light source.
     let mut alpha_angle_modifier: f64 = 0.0;
     if object.direction == 1 {
@@ -617,7 +592,6 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
                 if field_ray_brightness.2 > float_light_b_intensity {
                     field_ray_brightness.2 = float_light_b_intensity;
                 }
-                // 
             }
             //println!("---> Travelled {} --> {} {}", field_travelled_dist_this_target.0, (field_travelled_dist_this_target.1).0, (field_travelled_dist_this_target.1).1);
             //println!("--------> Ray final field coords {} {}", field_ray_coords.0, field_ray_coords.1);
@@ -647,9 +621,9 @@ fn main() {
     let (mut map, (player_x, player_y)) = make_map();
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(player_x, player_y, 1, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0));
-    let light_bulb = Object::new(player_x+3, player_y+3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.05), 45.0));
-    let light_bulb2 = Object::new(player_x-3, player_y-3, 3, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.5), 45.0));
+    let player = Object::new(player_x, player_y, 1, '@', COLOR_PLAYER, (true, (0.9, 0.9, 0.9), 45.0));
+    let light_bulb = Object::new(player_x+3, player_y+3, 3, '*', COLOR_PLAYER, (true, (0.9, 0.0, 0.0), 135.0));
+    let light_bulb2 = Object::new(player_x-3, player_y-3, 1, '*', COLOR_PLAYER, (true, (0.9, 0.0, 0.0), 135.0));
     let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 1, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0));
     
     let mut objects = [player, npc, light_bulb, light_bulb2];
@@ -670,10 +644,10 @@ fn main() {
     
     // Generate master illumination map.
     //
-    // This is a vector field of i32 illumination values. These are zeroed at the start of each
+    // This is a vector field of (f64, f64, f64) illumination values. These are zeroed at the start of each
     // FOV update, and then all light-sources (including the ambient illumination) are summed into
     // it. Tiles and Objects are drawn with their 'lightness' value scaled according to this value
-    // at their position. The values are re-scaled from the native linear 0 -> 9999 to
+    // at their position. The values are re-scaled from the native linear 0.0 -> 1.0 to
     // log 0.0 -> 1.0.
     
     let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
