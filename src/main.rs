@@ -31,7 +31,8 @@ const MAX_ROOMS: i32 = 30;
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
-const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.02, 0.02, 0.02);
+const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
+const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.5;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -318,7 +319,7 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
         // Draw all world tiles.
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
-                let visible = fov_map.is_in_fov(x, y);
+                let visible = fov_map.is_in_fov(x, y) && ((light_field[x as usize][y as usize].0 + light_field[x as usize][y as usize].1 + light_field[x as usize][y as usize].2) > 0.0);
                 
                 // If we borrow map as mutable first, then we cannot borrow it as unmutable
                 // afterwards to create the mutable wall_color.
@@ -357,9 +358,22 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     
                 } else {
                     
-                    let float_r_channel_output: f64 = wall_color.0 * AMBIENT_ILLUMINATION.0;
-                    let float_g_channel_output: f64 = wall_color.1 * AMBIENT_ILLUMINATION.1;
-                    let float_b_channel_output: f64 = wall_color.2 * AMBIENT_ILLUMINATION.2;
+                    let mut not_visible_illumination: (f64, f64, f64) = AMBIENT_ILLUMINATION;
+                    not_visible_illumination.0 = not_visible_illumination.0 / 5.0;
+                    if not_visible_illumination.0 < MIN_NOT_VISIBLE_ILLUMINATION.0 {
+                        not_visible_illumination.0 = MIN_NOT_VISIBLE_ILLUMINATION.0;
+                    }
+                    not_visible_illumination.1 = not_visible_illumination.1 / 5.0;
+                    if not_visible_illumination.1 < MIN_NOT_VISIBLE_ILLUMINATION.1 {
+                        not_visible_illumination.1 = MIN_NOT_VISIBLE_ILLUMINATION.1;
+                    }
+                    not_visible_illumination.2 = not_visible_illumination.2 / 5.0;
+                    if not_visible_illumination.2 < MIN_NOT_VISIBLE_ILLUMINATION.2 {
+                        not_visible_illumination.2 = MIN_NOT_VISIBLE_ILLUMINATION.2;
+                    }
+                    let float_r_channel_output: f64 = wall_color.0 * not_visible_illumination.0;
+                    let float_g_channel_output: f64 = wall_color.1 * not_visible_illumination.1;
+                    let float_b_channel_output: f64 = wall_color.2 * not_visible_illumination.2;
                     
                     // -- Code to turn linearised total brightness into a log brightness --
                     let a = -1.01179495;
@@ -543,7 +557,7 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
             let mut field_ray_coords: (f64, f64) = (field_light_coords.0, field_light_coords.1);
             let mut field_ray_brightness: (f64, f64, f64) = (float_light_r_intensity, float_light_g_intensity, float_light_b_intensity);
             
-            let field_dist_step: f64 = 0.1;
+            let field_dist_step: f64 = 0.05;
             let field_dist_increments: f64 = field_light_target_distance / field_dist_step;
             
             let field_dist_step_comps: (f64, f64) = ((field_light_target_dist_comps.0 / field_dist_increments), (field_light_target_dist_comps.1 / field_dist_increments));
@@ -634,8 +648,8 @@ fn main() {
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
     let player = Object::new(player_x, player_y, 1, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0));
-    let light_bulb = Object::new(player_x+3, player_y+3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.05), 360.0));
-    let light_bulb2 = Object::new(player_x-3, player_y-3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.5), 360.0));
+    let light_bulb = Object::new(player_x+3, player_y+3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.05), 45.0));
+    let light_bulb2 = Object::new(player_x-3, player_y-3, 3, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.5), 45.0));
     let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 1, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0));
     
     let mut objects = [player, npc, light_bulb, light_bulb2];
