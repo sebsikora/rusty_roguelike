@@ -19,7 +19,7 @@ const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 45;
 
 const COLOR_WALL: (f64, f64, f64) = (0.509, 0.431, 0.196);
-const COLOR_GROUND: (f64, f64, f64) = (0.0, 0.6, 0.0);
+const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.6, 0.0);
 
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
@@ -31,8 +31,7 @@ const MAX_ROOMS: i32 = 30;
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
-const IN_FOV_LIGHTNESS_MODIFIER: f64 = 0.2;
-const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.008, 0.008, 0.008);
+const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.02, 0.02, 0.02);
 const ILLUMINATION_MODULATION: f64 = 0.5;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -94,17 +93,19 @@ impl Rect {
 struct Object {
     x: i32,
     y: i32,
+    direction: i32,
     char: char,
     color: (f64, f64, f64),
-    light_source: (bool, (f64, f64, f64)),
+    light_source: (bool, (f64, f64, f64), f64),
 }
 
 // Here we define the 'Object' object methods.
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64))) -> Self {
+    pub fn new(x: i32, y: i32, direction: i32, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64), f64)) -> Self {
         Object {
             x: x,
             y: y,
+            direction: direction,
             char: char,
             color: color,
             light_source: light_source,
@@ -116,6 +117,19 @@ impl Object {
         if !map[(self.x + dx) as usize][(self.y + dy) as usize].blocked {
             self.x += dx;
             self.y += dy;
+            if dx > 0 {
+                self.direction = 1;
+            }
+            if dx < 0 {
+                self.direction = 3;
+            }
+            if dy > 0 {
+                self.direction = 2;
+            }
+            if dy < 0 {
+                self.direction = 4;
+            }
+            println!("Direction {}", self.direction);
         }
     }
     
@@ -308,7 +322,7 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                 
                 // If we borrow map as mutable first, then we cannot borrow it as unmutable
                 // afterwards to create the mutable wall_color.
-                let mut wall_color = map[x as usize][y as usize].color;
+                let wall_color = map[x as usize][y as usize].color;
                 let explored = &mut map[x as usize][y as usize].explored;
                 
                 let mut display_color: (i32, i32, i32) = (0, 0, 0);
@@ -438,7 +452,7 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
     }
     
     let float_light_radius: f64 = (max_intensity / 0.0039215).sqrt();
-    let int_light_radius: i32 = (float_light_radius.round() as i32);
+    let int_light_radius: i32 = float_light_radius.round() as i32;
     //println!("Int light radius {}", int_light_radius);
     
     let light_field_dimensions: (i32, i32) = ((2 * int_light_radius) + 1, (2 * int_light_radius) + 1);
@@ -455,6 +469,26 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
     let field_light_coords: (f64, f64) = (((map_light_coords.0 as f64) + 0.5) - (map_offset_start.0 as f64), ((map_light_coords.1 as f64) + 0.5) - (map_offset_start.1 as f64));
     //println!("Field light coords {} {}", field_light_coords.0, field_light_coords.1);
     
+    // Get beam sweep angle - either side of the beam centre (alpha angle = 0 deg).
+    let beam_sweep: f64 = object.light_source.2;
+    
+    // Determine angle modifier to set 'direction'.
+    //
+    // This value is subtracted from the alpha angle calculated for each target tile, in effect rotating the light source.
+    let mut alpha_angle_modifier: f64 = 0.0;
+    if object.direction == 1 {
+        alpha_angle_modifier = 0.0;
+    }
+    if object.direction == 2 {
+        alpha_angle_modifier = 90.0;
+    }
+    if object.direction == 3 {
+        alpha_angle_modifier = 180.0;
+    }
+    if object.direction == 4 {
+        alpha_angle_modifier = 270.0;
+    }
+    
     'target_y: for map_target_y_coord in (map_offset_start.1)..(map_offset_end.1) {
         'target_x: for map_target_x_coord in (map_offset_start.0)..(map_offset_end.0) {
             total_ray_count = total_ray_count + 1;
@@ -463,7 +497,46 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
             let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.5) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.5) - (map_offset_start.1 as f64));
             //println!("Field target coords {} {}", field_target_coords.0, field_target_coords.1);
             
+            // Get distance components to target. 
             let field_light_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
+            
+            // Determine which quadrant the target is in with respect to alpha = 0 deg and calculate
+            // the corresponding target alpha angle.
+            let mut alpha_angle: f64 = 0.0;
+            let atan_rad: f64 = ((field_light_target_dist_comps.1).abs() / (field_light_target_dist_comps.0).abs()).atan();
+            let atan_deg: f64 = (atan_rad / 6.28318530718) * 360.0;
+            if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
+                alpha_angle = atan_deg.abs();
+            }
+            if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
+                alpha_angle = 180.0 - atan_deg.abs();
+            }
+            if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 < 0.0) {
+                alpha_angle = atan_deg.abs() + 180.0;
+            }
+            if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 < 0.0) {
+                alpha_angle = 360.0 - atan_deg.abs();
+            }
+            
+            // Apply alpha angle direction modifier.
+            alpha_angle = alpha_angle - alpha_angle_modifier;
+            if alpha_angle < 0.0 {
+                // Underflow, add 360 deg.
+                alpha_angle = alpha_angle + 360.0;
+            } else {
+                if alpha_angle > 360.0 {
+                    // Overflow, subtract 360 deg.
+                    alpha_angle = alpha_angle - 360.0;
+                }
+            }
+            //println!("Alpha {}",alpha_angle);
+            
+            // Check if we need to cast a ray.
+            if !((alpha_angle <= beam_sweep) || (alpha_angle >= (360.0 - beam_sweep))) {
+                // If not, stop this pass and start on next target in x.
+                continue 'target_x;
+            }
+            
             let field_light_target_distance: f64 = ((field_light_target_dist_comps.0).powi(2) + (field_light_target_dist_comps.1).powi(2)).sqrt();
             //println!("Field light -> target distance {} {} -> {}", field_light_target_dist_comps.0, field_light_target_dist_comps.1, field_light_target_distance);
             
@@ -479,7 +552,7 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
             
             let mut field_travelled_dist_this_target: (f64, (f64, f64)) = (0.0, (0.0, 0.0));
             
-            'ray: for mut increment in 0..(field_dist_increments as i32) {
+            'ray: for increment in 0..(field_dist_increments as i32) {
                 
                 let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + map_offset_start.1);
                 if (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
@@ -513,20 +586,20 @@ fn compute_lightfield(map: &mut Map, object: &Object) -> (LightField, (i32, i32)
                 (field_travelled_dist_this_target.1).1 += field_dist_step_comps.1;
                 
                 // Reduce light intensity here...
-                let mut modulation_distance = (field_travelled_dist_this_target.0 * ILLUMINATION_MODULATION);
+                let mut modulation_distance = field_travelled_dist_this_target.0 * ILLUMINATION_MODULATION;
                 if modulation_distance < 1.0 {
                     modulation_distance = 1.0;
                 }
                 
-                field_ray_brightness.0 = (float_light_r_intensity / ((modulation_distance).powf(2.0)));
+                field_ray_brightness.0 = float_light_r_intensity / ((modulation_distance).powi(2));
                 if field_ray_brightness.0 > float_light_r_intensity {
                     field_ray_brightness.0 = float_light_r_intensity;
                 }
-                field_ray_brightness.1 = (float_light_g_intensity / ((modulation_distance).powf(2.0)));
+                field_ray_brightness.1 = float_light_g_intensity / ((modulation_distance).powi(2));
                 if field_ray_brightness.1 > float_light_g_intensity {
                     field_ray_brightness.1 = float_light_g_intensity;
                 }
-                field_ray_brightness.2 = (float_light_b_intensity / ((modulation_distance).powf(2.0)));
+                field_ray_brightness.2 = float_light_b_intensity / ((modulation_distance).powi(2));
                 if field_ray_brightness.2 > float_light_b_intensity {
                     field_ray_brightness.2 = float_light_b_intensity;
                 }
@@ -560,10 +633,10 @@ fn main() {
     let (mut map, (player_x, player_y)) = make_map();
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(player_x, player_y, '@', COLOR_PLAYER, (true, (1.0, 0.0, 1.0)));
-    let light_bulb = Object::new(player_x+3, player_y+3, '*', COLOR_PLAYER, (true, (0.1, 0.1, 0.1)));
-    let light_bulb2 = Object::new(player_x-3, player_y-3, '*', COLOR_PLAYER, (true, (0.1, 0.1, 0.1)));
-    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0)));
+    let player = Object::new(player_x, player_y, 1, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0));
+    let light_bulb = Object::new(player_x+3, player_y+3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.05), 360.0));
+    let light_bulb2 = Object::new(player_x-3, player_y-3, 1, '*', COLOR_PLAYER, (true, (0.5, 0.0, 0.5), 360.0));
+    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 1, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0));
     
     let mut objects = [player, npc, light_bulb, light_bulb2];
     
