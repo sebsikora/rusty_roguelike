@@ -34,10 +34,12 @@ const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 1.0;
+const RAYCAST_DISTANCE_STEP: f64 = 0.05;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
 type LightField = Vec<Vec<(f64, f64, f64)>>;
+
 
 // Define a 'Tile' object.
 #[derive(Clone, Copy, Debug)]
@@ -111,45 +113,38 @@ impl LightFieldObject {
         }
     }
     
-    pub fn recompute(&mut self, map: &Map, obj_x: &i32, obj_y: &i32, obj_prof: &(f64, f64, f64), obj_direc: &f64, obj_sweep: &f64) {
-        self.compute(&map, &obj_x, &obj_y, &obj_prof, &obj_direc, &obj_sweep);
-    }
-    
     pub fn compute(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) {
-        let mut total_ray_count = 0;
-        
+        // Determine the maximum intensity
         let float_light_r_intensity: f64 = intensity_profile.0;
         let float_light_g_intensity: f64 = intensity_profile.1;
         let float_light_b_intensity: f64 = intensity_profile.2;
+        let mut max_intensity: f64 = (float_light_r_intensity.max(float_light_g_intensity)).max(float_light_b_intensity);
         
-        let mut max_intensity: f64 = 0.0;
-        if (float_light_r_intensity >= float_light_g_intensity) && (float_light_r_intensity >= float_light_b_intensity) {
-            max_intensity = float_light_r_intensity;
-        }
-        if (float_light_g_intensity >= float_light_r_intensity) && (float_light_g_intensity >= float_light_b_intensity) {
-            max_intensity = float_light_g_intensity;
-        }
-        if (float_light_b_intensity >= float_light_r_intensity) && (float_light_b_intensity >= float_light_g_intensity) {
-            max_intensity = float_light_b_intensity;
-        }
-        
+        // Determine the map and field space beam radius according to the highest intensity component.
+        // The origin of the 'magic number' comes from the fact that if the reference brightness is defined
+        // at a distance of 1.0, then the maximum radius corresponds to the square root of the ratio of initial and 
+        // minimum brightnesses. In this case the minimum brightness is 1/255 (8-bit color) = 0.0039215...
         let float_light_radius: f64 = (max_intensity / 0.0039215).sqrt();
-        let int_light_radius: i32 = float_light_radius.round() as i32;
-        //println!("Int light radius {}", int_light_radius);
+        let mut conversion: f64 = float_light_radius;
         
+        // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
+        // tiles to the periphery of the light field.
+        if conversion - conversion.trunc() < 0.5 {
+            conversion = conversion + 0.5;
+        }
+        let int_light_radius: i32 = conversion.round() as i32;
+        
+        // Light field spans 1 radius on each side of the light-source tile.
         let light_field_dimensions: (i32, i32) = ((2 * int_light_radius) + 1, (2 * int_light_radius) + 1);
-        let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.0 as usize]; light_field_dimensions.1 as usize];
-        
         let map_light_coords: (i32, i32) = (*pos_x, *pos_y);
-        //println!("Light coords {} {}", object.x, object.y);
-        
         let map_offset_start: (i32, i32) = ((map_light_coords.0 - int_light_radius), (map_light_coords.1 - int_light_radius));
         let map_offset_end: (i32, i32) = ((map_light_coords.0 + int_light_radius), (map_light_coords.1 + int_light_radius));
-        //println!("Map start offsets {} {}", map_offset_start.0, map_offset_start.1);
-        //println!("Map end offsets {} {}", map_offset_end.0, map_offset_end.1);
+        let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.0 as usize]; light_field_dimensions.1 as usize];
         
+        // Calculate the light-source co-ordinates in field space (as opposed to map space).
+        //
+        // NOTE - Adding 0.5 to each makes it easy to convert back from map space to field space - we just need to .trunc() :D
         let field_light_coords: (f64, f64) = (((map_light_coords.0 as f64) + 0.5) - (map_offset_start.0 as f64), ((map_light_coords.1 as f64) + 0.5) - (map_offset_start.1 as f64));
-        //println!("Field light coords {} {}", field_light_coords.0, field_light_coords.1);
         
         // Get beam sweep angle - either side of the beam centre (alpha angle = 0 deg).
         let beam_sweep: f64 = *angular_sweep;
@@ -158,22 +153,22 @@ impl LightFieldObject {
         // This value is subtracted from the alpha angle calculated for each target tile, in effect rotating the light source.
         let alpha_angle_modifier: f64 = *direction;
         
+        // This is an inverse ray-casting (shadow casting?).
+        //
+        // We iterate through all of the target tiles within the light field and cast three rays from the
+        // light source to the target, one for each color channel.
         'target_y: for map_target_y_coord in (map_offset_start.1)..(map_offset_end.1) {
             'target_x: for map_target_x_coord in (map_offset_start.0)..(map_offset_end.0) {
-                total_ray_count = total_ray_count + 1;
-                //println!("---------------------------------------------------------");
-                
+                // Get co-ordinates of target tile and distance components from light-source to
+                // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just by truncating).
                 let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.5) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.5) - (map_offset_start.1 as f64));
-                //println!("Field target coords {} {}", field_target_coords.0, field_target_coords.1);
-                
-                // Get distance components to target. 
                 let field_light_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
                 // Determine which quadrant the target is in with respect to alpha = 0 deg and calculate
                 // the corresponding target alpha angle.
                 let mut alpha_angle: f64 = 0.0;
                 let atan_rad: f64 = ((field_light_target_dist_comps.1).abs() / (field_light_target_dist_comps.0).abs()).atan();
-                let atan_deg: f64 = (atan_rad / 6.28318530718) * 360.0;
+                let atan_deg: f64 = atan_rad.to_degrees();
                 if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
                     alpha_angle = atan_deg.abs();
                 }
@@ -198,26 +193,22 @@ impl LightFieldObject {
                         alpha_angle = alpha_angle - 360.0;
                     }
                 }
-                //println!("Alpha {}",alpha_angle);
                 
-                // Check if we need to cast a ray.
+                // Check if we need to cast a ray (Is target tile within angular field of view?)
                 if !((alpha_angle <= beam_sweep) || (alpha_angle >= (360.0 - beam_sweep))) {
-                    // If not, stop this pass and start on next target in x.
+                    // If not, stop this pass and start on next target tile in x.
                     continue 'target_x;
                 }
                 
                 let field_light_target_distance: f64 = ((field_light_target_dist_comps.0).powi(2) + (field_light_target_dist_comps.1).powi(2)).sqrt();
-                //println!("Field light -> target distance {} {} -> {}", field_light_target_dist_comps.0, field_light_target_dist_comps.1, field_light_target_distance);
                 
                 let mut field_ray_coords: (f64, f64) = (field_light_coords.0, field_light_coords.1);
                 let mut field_ray_brightness: (f64, f64, f64) = (float_light_r_intensity, float_light_g_intensity, float_light_b_intensity);
                 
-                let field_dist_step: f64 = 0.1;
+                let field_dist_step: f64 = RAYCAST_DISTANCE_STEP;
                 let field_dist_increments: f64 = field_light_target_distance / field_dist_step;
                 
                 let field_dist_step_comps: (f64, f64) = ((field_light_target_dist_comps.0 / field_dist_increments), (field_light_target_dist_comps.1 / field_dist_increments));
-                //println!("-> Step {} --> {} {}", field_dist_step, field_dist_step_comps.0, field_dist_step_comps.1);
-                //println!("-> Increments {}", field_dist_increments);
                 
                 let mut field_travelled_dist_this_target: (f64, (f64, f64)) = (0.0, (0.0, 0.0));
                 
@@ -273,13 +264,8 @@ impl LightFieldObject {
                         field_ray_brightness.2 = float_light_b_intensity;
                     }
                 }
-                //println!("---> Travelled {} --> {} {}", field_travelled_dist_this_target.0, (field_travelled_dist_this_target.1).0, (field_travelled_dist_this_target.1).1);
-                //println!("--------> Ray final field coords {} {}", field_ray_coords.0, field_ray_coords.1);
             }
         }
-        //println!("Total ray count {}", total_ray_count);
-        
-        //~{ light_field, map_offset_start, map_offset_end }
         self.light_field = light_field;
         self.map_offset_start = map_offset_start;
         self.map_offset_end = map_offset_end;
@@ -344,12 +330,7 @@ impl Object {
             
             // If the object is illuminated, we will need to recompute it's light field
             // whenever it moves.
-            let obj_x = self.x;
-            let obj_y = self.y;
-            let obj_direc = self.direction;
-            let obj_prof = self.light_source.1;
-            let obj_sweep = self.light_source.2;
-            self.light_field_object.recompute(&map, &obj_x, &obj_y, &obj_prof, &obj_direc, &obj_sweep);
+            self.light_field_object.compute(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
         }
     }
     
@@ -507,10 +488,6 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
         }
         for object in objects {
             if object.light_source.0 {
-                // Here calculate the light field generated by the object light source.
-                //
-                // ...then, composit this into the illumination map, light_field.
-                //
                 // When we draw tiles below, we will get ther luminance value from the
                 // illumination map.
                 //
