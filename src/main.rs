@@ -118,17 +118,17 @@ impl LightFieldObject {
         let float_light_r_intensity: f64 = intensity_profile.0;
         let float_light_g_intensity: f64 = intensity_profile.1;
         let float_light_b_intensity: f64 = intensity_profile.2;
-        let mut max_intensity: f64 = (float_light_r_intensity.max(float_light_g_intensity)).max(float_light_b_intensity);
+        let max_intensity: f64 = (float_light_r_intensity.max(float_light_g_intensity)).max(float_light_b_intensity);
         
         // Determine the map and field space beam radius according to the highest intensity component.
         // The origin of the 'magic number' comes from the fact that if the reference brightness is defined
         // at a distance of 1.0, then the maximum radius corresponds to the square root of the ratio of initial and 
         // minimum brightnesses. In this case the minimum brightness is 1/255 (8-bit color) = 0.0039215...
         let float_light_radius: f64 = (max_intensity / 0.0039215).sqrt();
-        let mut conversion: f64 = float_light_radius;
         
         // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
         // tiles to the periphery of the light field.
+        let mut conversion: f64 = float_light_radius;
         if conversion - conversion.trunc() < 0.5 {
             conversion = conversion + 0.5;
         }
@@ -329,9 +329,24 @@ impl Object {
             //println!("Direction {}", self.direction);
             
             // If the object is illuminated, we will need to recompute it's light field
-            // whenever it moves.
+            // whenever it moves. Strictly, we only need to recompute the light field whenever
+            // it moves if we have reflections enabled, otherwise symmetrical light fields do
+            // not change when moving. Non-symmetrical light fields would only change when
+            // rotating, not when translating. As we want to enable reflections, we will
+            // leave this without any additional conditonality.
             self.light_field_object.compute(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
         }
+    }
+    
+    pub fn toggle_light(&mut self, map: &Map) {
+        if !(self.light_source.0) {
+            self.light_source.0 = true;
+        } else {
+            self.light_source.0 = false;
+        }
+        // Recompute light field.
+        self.light_field_object.compute(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
+        println!("Flashlight toggled.");
     }
     
     // Draw object in chosen terminal.
@@ -379,10 +394,6 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 
 // Map creation function.
 //
-// Still to implement:
-//     - Need to detect when though we have not yet generated MAX_ROOMS rooms,
-//       there is insufficient empty space to create another room of at least 
-//       ROOM_MIN_SIZE^2 dimensions.
 fn make_map() -> (Map, (i32, i32)) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
@@ -462,6 +473,10 @@ fn handle_keys(root: &mut Root, player: &mut Object, map: &Map) -> bool {
         Key { code: Down, .. } => player.move_by(0, 1, map),
         Key { code: Left, .. } => player.move_by(-1, 0, map),
         Key { code: Right, .. } => player.move_by(1, 0, map),
+        
+        // Function keys.
+        
+        Key { printable: 'f', .. } => player.toggle_light(map),
         
         _ => {},
         
@@ -663,7 +678,7 @@ fn main() {
     // Set a ficticious previous player position to make sure that fov is calculated
     // on first pass of game loop.
     let mut previous_player_position = (-1, -1);
-    
+    let mut previous_flashlight_state = true;
     // Generate master illumination map.
     //
     // This is a vector field of (f64, f64, f64) illumination values. These are zeroed at the start of each
@@ -677,7 +692,7 @@ fn main() {
     // Main world loop.
     while !root.window_closed() {
         // Set flag to recompute fov is player position has changed.
-        let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
+        let fov_recompute = (previous_player_position != (objects[0].x, objects[0].y)) || (previous_flashlight_state != objects[0].light_source.0);
         // Draw all objects in objects list into composition terminal.
         render_all(&mut root, &mut con, &objects, &mut map, &mut fov_map, fov_recompute, &mut light_field);
         
@@ -697,6 +712,7 @@ fn main() {
         // Prior to handling keystrokes (where player position may be changed)
         // we grab the old player position.
         previous_player_position = (player.x, player.y);
+        previous_flashlight_state = player.light_source.0;
         
         //let exit = handle_keys(&mut root, &mut objects[0]);
         let exit = handle_keys(&mut root, player, &map);
