@@ -136,14 +136,20 @@ impl LightFieldObject {
         
         // Light field spans 1 radius on each side of the light-source tile.
         let light_field_dimensions: (i32, i32) = ((2 * int_light_radius) + 1, (2 * int_light_radius) + 1);
+        let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.0 as usize]; light_field_dimensions.1 as usize];
+        
+        // Grab light-source co-ordinates in map space and with the radius calculate the
+        // co-ordinates of the light fields bounding box (in map space). We store these along
+        // with the light field in the LightFieldObject, as it is what we use to know where to
+        // composit the light field into the overall map light field at rendering time.
         let map_light_coords: (i32, i32) = (*pos_x, *pos_y);
         let map_offset_start: (i32, i32) = ((map_light_coords.0 - int_light_radius), (map_light_coords.1 - int_light_radius));
         let map_offset_end: (i32, i32) = ((map_light_coords.0 + int_light_radius), (map_light_coords.1 + int_light_radius));
-        let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.0 as usize]; light_field_dimensions.1 as usize];
         
         // Calculate the light-source co-ordinates in field space (as opposed to map space).
         //
-        // NOTE - Adding 0.5 to each makes it easy to convert back from map space to field space - we just need to .trunc() :D
+        // NOTE - Adding 0.5 to each makes it easy to convert back from map space to field space - we just need to
+        // add the start offset and .trunc() :D
         let field_light_coords: (f64, f64) = (((map_light_coords.0 as f64) + 0.5) - (map_offset_start.0 as f64), ((map_light_coords.1 as f64) + 0.5) - (map_offset_start.1 as f64));
         
         // Get beam sweep angle - either side of the beam centre (alpha angle = 0 deg).
@@ -160,7 +166,8 @@ impl LightFieldObject {
         'target_y: for map_target_y_coord in (map_offset_start.1)..(map_offset_end.1) {
             'target_x: for map_target_x_coord in (map_offset_start.0)..(map_offset_end.0) {
                 // Get co-ordinates of target tile and distance components from light-source to
-                // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just by truncating).
+                // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just
+                // by adding the start offset and truncating).
                 let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.5) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.5) - (map_offset_start.1 as f64));
                 let field_light_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
@@ -394,7 +401,7 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 
 // Map creation function.
 //
-fn make_map() -> (Map, (i32, i32)) {
+fn make_map() -> (Map, (i32, i32), Vec<Rect>) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
@@ -446,7 +453,7 @@ fn make_map() -> (Map, (i32, i32)) {
         }
     }
     
-    (map, starting_position)
+    (map, starting_position, rooms)
 }
 
 
@@ -475,7 +482,6 @@ fn handle_keys(root: &mut Root, player: &mut Object, map: &Map) -> bool {
         Key { code: Right, .. } => player.move_by(1, 0, map),
         
         // Function keys.
-        
         Key { printable: 'f', .. } => player.toggle_light(map),
         
         _ => {},
@@ -655,15 +661,18 @@ fn main() {
     let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
     
     // Instantiate a map.
-    let (mut map, (player_x, player_y)) = make_map();
+    let (mut map, (player_x, player_y), rooms) = make_map();
+    
+    //~for room in rooms {
+        //~println!("Rooms {} {} {} {}", room.x1, room.y1, room.x2, room.y2);
+    //~}
     
     // Instantiate 'player' and 'npc' objects and put them in the objects list.
-    let player = Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (0.7, 0.7, 0.7), 45.0));
-    let light_bulb = Object::new(&map, player_x+3, player_y+3, 180.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0));
-    let light_bulb2 = Object::new(&map, player_x-3, player_y-3, 0.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0));
-    let npc = Object::new(&map, SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 0.0, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0));
-    
-    let mut objects = [player, npc, light_bulb, light_bulb2];
+    let mut objects = vec![];
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (0.7, 0.7, 0.7), 45.0)));
+    objects.push(Object::new(&map, SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 0.0, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0)));
+    objects.push(Object::new(&map, player_x-3, player_y-3, 0.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0)));
+    objects.push(Object::new(&map, player_x+3, player_y+3, 180.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0)));
     
     // Setup field of view map.
     let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
