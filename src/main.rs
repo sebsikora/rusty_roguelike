@@ -10,6 +10,7 @@ use tcod::map::{Map as FovMap, FovAlgorithm};
 
 use rand::*;
 
+
 // Define some constants.
 const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
@@ -19,7 +20,8 @@ const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 45;
 
 const COLOR_WALL: (f64, f64, f64) = (0.509, 0.431, 0.196);
-const COLOR_GROUND: (f64, f64, f64) = (0.247, 0.471, 0.0039);
+//const COLOR_GROUND: (f64, f64, f64) = (0.247, 0.471, 0.0039);
+const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.1, 0.1);
 
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
@@ -33,7 +35,7 @@ const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
-const ILLUMINATION_MODULATION: f64 = 1.0;
+const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -94,11 +96,9 @@ impl Rect {
 // Define our lightfield object.
 #[derive(Debug)]
 struct LightFieldObject {
-    light_field: LightField,
-    map_offset_start: (i32, i32),
-    map_offset_end: (i32, i32),
-    // Can add another variable in here to store all the child light fields required to
-    // track each reflection in due course.
+    // LightFieldObject just stores a vector of LightFields and their associated
+    // bounding corners in map space.
+    light_fields: Vec<(LightField, (i32, i32), (i32, i32))>,
 }
 
 impl LightFieldObject {
@@ -106,14 +106,56 @@ impl LightFieldObject {
         let light_field: LightField = vec![vec![(0.0, 0.0, 0.0); 1 as usize]; 1 as usize];
         let map_offset_start: (i32, i32) = (0, 0);
         let map_offset_end: (i32, i32) = (0, 0);
+        let light_fields: Vec<(LightField, (i32, i32), (i32, i32))> = vec![(light_field, map_offset_start, map_offset_end); 1 as usize];
         LightFieldObject {
-            light_field: light_field,
-            map_offset_start: map_offset_start,
-            map_offset_end: map_offset_end,
+            light_fields: light_fields,
         }
     }
     
-    pub fn compute(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) {
+    pub fn recalculate(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) {
+        // Zero the LightFieldObject vector.
+        let light_field: LightField = vec![vec![(0.0, 0.0, 0.0); 1 as usize]; 1 as usize];
+        let map_offset_start: (i32, i32) = (0, 0);
+        let map_offset_end: (i32, i32) = (0, 0);
+        self.light_fields = vec![(light_field, map_offset_start, map_offset_end); 1 as usize];
+        
+        // Create an empty vector buffer to hold any temporary light-source objects that will be created by any reflections
+        // resulting from the first, parent pass at recalculating the object light field.
+        let mut outer_buffer: Vec<Object> = vec![];
+        let initial_result: (LightField, (i32, i32), (i32, i32), Vec<Object>) = self.compute_lightfields(map, pos_x, pos_y, intensity_profile, direction, angular_sweep);
+        // Commit the resulting LightFields to the LightFieldObject vector.
+        self.light_fields.push((initial_result.0, initial_result.1, initial_result.2));
+        
+        // Place any resulting objects into the buffer.
+        for object in initial_result.3 {
+            outer_buffer.push(object);
+        }
+        
+        // While there are any temporary light objects in the buffer.
+        while outer_buffer.len() > 0 {
+            // Zero a sub-buffer.
+            let mut inner_buffer: Vec<Object> = vec![];
+            // For each object in the buffer.
+            for outer_object in outer_buffer {
+                // Calculate the immediate LightField and resulting further temporary light objects.
+                let new_result = self.compute_lightfields(map, &outer_object.x, &outer_object.y, &outer_object.light_source.1, &outer_object.direction, &outer_object.light_source.2);
+                // Commit the resulting LightField to the LightFieldObject.
+                self.light_fields.push((new_result.0, new_result.1, new_result.2));
+                // Commit the resulting temporary light objects to the sub buffer,
+                for object in new_result.3 {
+                    inner_buffer.push(object);
+                }
+            }
+            // Once this pass at the buffer is completed, refill the buffer from the sub buffer and repeat.
+            outer_buffer = inner_buffer;
+        }
+        // No more resulting reflections, we are done!
+    }
+    
+    fn compute_lightfields(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) -> (LightField, (i32, i32), (i32, i32), Vec<Object>) {
+        
+        let mut resulting_reflections: Vec<Object> = vec![];
+        
         // Determine the maximum intensity
         let float_light_r_intensity: f64 = intensity_profile.0;
         let float_light_g_intensity: f64 = intensity_profile.1;
@@ -124,7 +166,8 @@ impl LightFieldObject {
         // The origin of the 'magic number' comes from the fact that if the reference brightness is defined
         // at a distance of 1.0, then the maximum radius corresponds to the square root of the ratio of initial and 
         // minimum brightnesses. In this case the minimum brightness is 1/255 (8-bit color) = 0.0039215...
-        let float_light_radius: f64 = (max_intensity / 0.0039215).sqrt();
+        let float_light_radius: f64 = (max_intensity / 0.0039215).sqrt() + ILLUMINATION_MODULATION;
+        //let float_light_radius: f64 = (max_intensity / 0.0039215).powf((1.0/1.5)) + ILLUMINATION_MODULATION;
         
         // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
         // tiles to the periphery of the light field.
@@ -163,8 +206,10 @@ impl LightFieldObject {
         //
         // We iterate through all of the target tiles within the light field and cast three rays from the
         // light source to the target, one for each color channel.
+        let mut target_index: i32 = 0;
         'target_y: for map_target_y_coord in (map_offset_start.1)..(map_offset_end.1) {
             'target_x: for map_target_x_coord in (map_offset_start.0)..(map_offset_end.0) {
+                //println!("Target index: {}", target_index);
                 // Get co-ordinates of target tile and distance components from light-source to
                 // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just
                 // by adding the start offset and truncating).
@@ -204,6 +249,7 @@ impl LightFieldObject {
                 // Check if we need to cast a ray (Is target tile within angular field of view?)
                 if !((alpha_angle <= beam_sweep) || (alpha_angle >= (360.0 - beam_sweep))) {
                     // If not, stop this pass and start on next target tile in x.
+                    target_index = target_index + 1;
                     continue 'target_x;
                 }
                 
@@ -221,30 +267,6 @@ impl LightFieldObject {
                 
                 'ray: for increment in 0..(field_dist_increments as i32) {
                     
-                    let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + map_offset_start.1);
-                    if (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
-                        continue 'target_x;
-                    }
-                    
-                    let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
-                    let ray_r_brightness: f64 = field_ray_brightness.0;
-                    let ray_g_brightness: f64 = field_ray_brightness.1;
-                    let ray_b_brightness: f64 = field_ray_brightness.2;
-                    
-                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
-                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
-                    }
-                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < ray_g_brightness {
-                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = ray_g_brightness;
-                    }
-                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < ray_b_brightness {
-                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = ray_b_brightness;
-                    }
-                    
-                    if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
-                        continue 'target_x;
-                    }
-                    
                     field_ray_coords.0 += field_dist_step_comps.0;
                     field_ray_coords.1 += field_dist_step_comps.1;
                     
@@ -252,30 +274,105 @@ impl LightFieldObject {
                     (field_travelled_dist_this_target.1).0 += field_dist_step_comps.0;
                     (field_travelled_dist_this_target.1).1 += field_dist_step_comps.1;
                     
+                    let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + map_offset_start.1);
+                    if (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
+                        target_index = target_index + 1;
+                        continue 'target_x;
+                    }
+                    
                     // Reduce light intensity here...
-                    let mut modulation_distance = field_travelled_dist_this_target.0 * ILLUMINATION_MODULATION;
+                    let mut modulation_distance: f64 = field_travelled_dist_this_target.0 - ILLUMINATION_MODULATION;
                     if modulation_distance < 1.0 {
                         modulation_distance = 1.0;
                     }
                     
-                    field_ray_brightness.0 = float_light_r_intensity / ((modulation_distance).powi(2));
+                    //let modulation: f64 = (modulation_distance).powf(1.5);
+                    let modulation: f64 = (modulation_distance).powi(2);
+                    
+                    field_ray_brightness.0 = float_light_r_intensity / modulation;
                     if field_ray_brightness.0 > float_light_r_intensity {
                         field_ray_brightness.0 = float_light_r_intensity;
                     }
-                    field_ray_brightness.1 = float_light_g_intensity / ((modulation_distance).powi(2));
+                    field_ray_brightness.1 = float_light_g_intensity / modulation;
                     if field_ray_brightness.1 > float_light_g_intensity {
                         field_ray_brightness.1 = float_light_g_intensity;
                     }
-                    field_ray_brightness.2 = float_light_b_intensity / ((modulation_distance).powi(2));
+                    field_ray_brightness.2 = float_light_b_intensity / modulation;
                     if field_ray_brightness.2 > float_light_b_intensity {
                         field_ray_brightness.2 = float_light_b_intensity;
+                    }
+                    let ray_r_brightness: f64 = field_ray_brightness.0;
+                    let ray_g_brightness: f64 = field_ray_brightness.1;
+                    let ray_b_brightness: f64 = field_ray_brightness.2;
+                    
+                    let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
+                    
+                    // ----------------------------------
+                    if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
+                        if !((map_check_coords.0 == map_light_coords.0) && (map_check_coords.1 == map_light_coords.1)) {
+                            // The ray his hit an opaque thing, that is not at the same co-ordinates as the light-source.
+                            //
+                            // This is where we need to add the code to check if we need to generate a reflection child light field.
+                            //
+                            // We have our alpha_angle, three color channel brightnesses, etc.
+                            // -----------------------------------------------------------------------------------------------------
+                            
+                            // With the new modifications to the light field calulation functions, to add a reflection we just need
+                            // to append an object that will generate the reflection to [resulting_reflections]. This list of light
+                            // -source objects will be returned, and then used by the calling function to generate the resulting
+                            // light fields. The process is then repeated. Once this function returns without any resulting reflect
+                            // -tions, we're done for this parent object :D.
+                            
+                            // -----------------------------------------------------------------------------------------------------
+                            
+                            // Then, if the opaque target the ray has hit occupies a location immediately horizontally or vertically
+                            // adjacent to the light source location, do not illuminate it. This prevents light-sources embedded into
+                            // the walls from illuminating the adjacent wall tiles. 
+                            let mut adjacent: bool = false;
+                            if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && (map_check_coords.1 - map_light_coords.1).abs() == 1) {
+                                adjacent = true;
+                            }
+                            if FOV_LIGHT_WALLS && !adjacent {
+                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
+                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
+                                }
+                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < ray_g_brightness {
+                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = ray_g_brightness;
+                                }
+                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < ray_b_brightness {
+                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = ray_b_brightness;
+                                }
+                            }
+                            target_index = target_index + 1;
+                            continue 'target_x;
+                        } else {
+                            // The ray has hit an opaque thing, but is still in the same map location as the light-source.
+                            //
+                            // This suggests we are still inside the light source. We will allow the ray to continue, but
+                            // we won't light up this location (it's supposed to be opaque!).
+                            continue 'ray;
+                        }
+                    } else {
+                        // The ray is inside a location that does not block sight. If the ray brightness values in each
+                        // channel are higher than the current value stored for that location in this light field, over-
+                        // write them.
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
+                        }
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < ray_g_brightness {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = ray_g_brightness;
+                        }
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < ray_b_brightness {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = ray_b_brightness;
+                        }
+                        continue 'ray;
                     }
                 }
             }
         }
-        self.light_field = light_field;
-        self.map_offset_start = map_offset_start;
-        self.map_offset_end = map_offset_end;
+        
+        // Return any resulting refections.
+        (light_field, map_offset_start, map_offset_end, resulting_reflections)
     }
 }
 
@@ -302,7 +399,7 @@ impl Object {
         
         // However, if it is lit, the compute it's lightfield and position limits.
         if light_source.0 {
-            light_field_object.compute(&map, &x, &y, &light_source.1, &direction, &light_source.2);
+            light_field_object.recalculate(&map, &x, &y, &light_source.1, &direction, &light_source.2);
         }
         
         Object {
@@ -341,7 +438,7 @@ impl Object {
             // not change when moving. Non-symmetrical light fields would only change when
             // rotating, not when translating. As we want to enable reflections, we will
             // leave this without any additional conditonality.
-            self.light_field_object.compute(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
+            self.light_field_object.recalculate(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
         }
     }
     
@@ -352,7 +449,7 @@ impl Object {
             self.light_source.0 = false;
         }
         // Recompute light field.
-        self.light_field_object.compute(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
+        self.light_field_object.recalculate(&map, &self.x, &self.y, &(self.light_source.1), &self.direction, &(self.light_source.2));
         println!("Flashlight toggled.");
     }
     
@@ -401,13 +498,14 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 
 // Map creation function.
 //
-fn make_map() -> (Map, (i32, i32), Vec<Rect>) {
+fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
     let mut starting_position = (0, 0);
         
     let mut rooms = vec![];
+    let mut light_sources = vec![];
     
     for _ in 0..MAX_ROOMS {
         let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
@@ -449,11 +547,26 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>) {
                 }
             }
             
+            // Add corner lights pointing inwards diagonally.
+            let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
+            let torch_brightness: (f64, f64, f64) = (0.5, 0.5, 0.5);
+            let torch_angle: f64 = 45.0;
+            light_sources.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
+            light_sources.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
+            light_sources.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
+            light_sources.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
+            
+            // Add mid-side lights pointint inwards.
+            light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y1 + 0, 90.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
+            light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y2 - 0, 270.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
+            light_sources.push(Object::new(&map, new_room.x1 + 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 0.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
+            light_sources.push(Object::new(&map, new_room.x2 - 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 180.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
+            
             rooms.push(new_room);
         }
     }
     
-    (map, starting_position, rooms)
+    (map, starting_position, rooms, light_sources)
 }
 
 
@@ -515,25 +628,28 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                 // Instead of computing it each time, we will only read the values from
                 // the objects stored light_fields. These get updated whenever an object
                 // moves.
+                let object_light_fields = &object.light_field_object.light_fields;
                 
-                let object_light_field = &object.light_field_object.light_field;
-                let map_start_offset = &object.light_field_object.map_offset_start;
-                let map_end_offset = &object.light_field_object.map_offset_end;
-                
-                'y_loop: for y in (map_start_offset.1)..(map_end_offset.1) {
-                            if (y < 0) || (y > (MAP_HEIGHT - 1)) {
-                                continue 'y_loop;
-                            }
-                            'x_loop: for x in (map_start_offset.0)..(map_end_offset.0) {
-                                        if (x < 0) || (x > (MAP_WIDTH - 1)) {
-                                            continue 'x_loop;
-                                        }
-                                        
-                                        light_field[x as usize][y as usize].0 = light_field[x as usize][y as usize].0 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].0;
-                                        light_field[x as usize][y as usize].1 = light_field[x as usize][y as usize].1 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].1;
-                                        light_field[x as usize][y as usize].2 = light_field[x as usize][y as usize].2 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].2;
-                                     }
-                            }
+                for current_light_field in object_light_fields {
+                    let object_light_field = &current_light_field.0;
+                    let map_start_offset = &current_light_field.1;
+                    let map_end_offset = &current_light_field.2;
+                    
+                    'y_loop: for y in (map_start_offset.1)..(map_end_offset.1) {
+                                if (y < 0) || (y > (MAP_HEIGHT - 1)) {
+                                    continue 'y_loop;
+                                }
+                                'x_loop: for x in (map_start_offset.0)..(map_end_offset.0) {
+                                            if (x < 0) || (x > (MAP_WIDTH - 1)) {
+                                                continue 'x_loop;
+                                            }
+                                            
+                                            light_field[x as usize][y as usize].0 = light_field[x as usize][y as usize].0 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].0;
+                                            light_field[x as usize][y as usize].1 = light_field[x as usize][y as usize].1 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].1;
+                                            light_field[x as usize][y as usize].2 = light_field[x as usize][y as usize].2 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].2;
+                                         }
+                             }
+                }
             }
         }
         
@@ -557,7 +673,7 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     // -- Code to turn linearised total brightness into a log brightness --
                     display_color = correct_colors(&float_r_channel_output, &float_g_channel_output, &float_b_channel_output);
                     // --------------------------------------------------------------------
-                    
+                    //display_color = ((float_r_channel_output * 255.0) as i32, (float_g_channel_output * 255.0) as i32, (float_b_channel_output * 255.0) as i32);
                     *explored = true;
                     
                 } else {
@@ -629,18 +745,32 @@ fn correct_colors(float_r_channel_output: &f64, float_g_channel_output: &f64, fl
     let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
     let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
     let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
-    if corrected_r_channel_output > 1.0 {
-        corrected_r_channel_output = 1.0;
+    
+    let mut channels: (f64, f64, f64) = (corrected_r_channel_output, corrected_g_channel_output, corrected_b_channel_output);
+    let mut scaling_proportion: f64 = 0.0;
+    
+    // If any color channels have overflowed.
+    if (corrected_r_channel_output > 1.0) || (corrected_g_channel_output > 1.0) || (corrected_b_channel_output > 1.0) {
+        // Scale brightest channel down to 1.0 and then scale down remaining channels by same proportion.
+        if corrected_r_channel_output >= corrected_g_channel_output.max(corrected_b_channel_output) {
+            scaling_proportion = 1.0 / channels.0;
+        } else {
+            if corrected_g_channel_output >= corrected_r_channel_output.max(corrected_b_channel_output) {
+                scaling_proportion = 1.0 / channels.1;
+            } else {
+                if corrected_b_channel_output >= corrected_r_channel_output.max(corrected_g_channel_output) {
+                    scaling_proportion = 1.0 / channels.2;
+                }
+            }
+        }
+        channels.0 = channels.0 * scaling_proportion;
+        channels.1 = channels.1 * scaling_proportion;
+        channels.2 = channels.2 * scaling_proportion;
     }
-    if corrected_g_channel_output > 1.0 {
-        corrected_g_channel_output = 1.0;
-    }
-    if corrected_b_channel_output > 1.0 {
-        corrected_b_channel_output = 1.0;
-    }
-    display_color.0 = (corrected_r_channel_output * 255.0) as i32;
-    display_color.1 = (corrected_g_channel_output * 255.0) as i32;
-    display_color.2 = (corrected_b_channel_output * 255.0) as i32;
+    
+    display_color.0 = (channels.0 * 255.0) as i32;
+    display_color.1 = (channels.1 * 255.0) as i32;
+    display_color.2 = (channels.2 * 255.0) as i32;
     
     display_color
 }
@@ -661,18 +791,17 @@ fn main() {
     let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
     
     // Instantiate a map.
-    let (mut map, (player_x, player_y), rooms) = make_map();
+    let (mut map, (player_x, player_y), rooms, light_sources) = make_map();
     
-    //~for room in rooms {
-        //~println!("Rooms {} {} {} {}", room.x1, room.y1, room.x2, room.y2);
-    //~}
-    
-    // Instantiate 'player' and 'npc' objects and put them in the objects list.
+    // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (0.7, 0.7, 0.7), 45.0)));
-    objects.push(Object::new(&map, SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, 0.0, '@', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0)));
-    objects.push(Object::new(&map, player_x-3, player_y-3, 0.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0)));
-    objects.push(Object::new(&map, player_x+3, player_y+3, 180.0, '*', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 135.0)));
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (2.0, 2.0, 2.0), 30.0)));
+    objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0)));
+    
+    // Append the light-sources created during room creation to the objects vector.
+    for light_source in light_sources {
+        objects.push(light_source);
+    }
     
     // Setup field of view map.
     let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
