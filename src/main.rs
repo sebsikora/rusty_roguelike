@@ -308,11 +308,7 @@ impl LightFieldObject {
                     if field_ray_brightness.2 > float_light_b_intensity {
                         field_ray_brightness.2 = float_light_b_intensity;
                     }
-                    let ray_r_brightness: f64 = field_ray_brightness.0;
-                    let ray_g_brightness: f64 = field_ray_brightness.1;
-                    let ray_b_brightness: f64 = field_ray_brightness.2;
                     // ---------------------------------------------------------------------------------------------------
-                    
                     
                     let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
                     
@@ -320,39 +316,40 @@ impl LightFieldObject {
                         if !((map_check_coords.0 == map_light_coords.0) && (map_check_coords.1 == map_light_coords.1)) {
                             // The ray his hit an opaque thing, that is not at the same co-ordinates as the light-source.
                             //
-                            // This is where we need to add the code to check if we need to generate a reflection child light field.
-                            //
-                            // We have our alpha_angle, three color channel brightnesses, etc.
-                            // -----------------------------------------------------------------------------------------------------
-                            //
-                            // With the new modifications to the light field calulation functions, to add a reflection we just need
-                            // to append an object that will generate the reflection to [resulting_reflections]. This list of light
-                            // -source objects will be returned, and then used by the calling function to generate the resulting
-                            // light fields. The process is then repeated. Once this function returns without any resulting reflect
-                            // -tions, we're done for this parent object :D.
-                            //
-                            //                                               H E R E
-                            //
-                            // -----------------------------------------------------------------------------------------------------
-                            
-                            // Then, if the opaque target the ray has hit occupies a location immediately horizontally or vertically
-                            // adjacent to the light source location, and if the light source location is set to block sight, do not 
-                            // illuminate it. This prevents light-sources embedded into the walls from illuminating the adjacent wall 
-                            // tiles. 
+                            // If the opaque target the ray has hit occupies a location immediately horizontally or vertically adjacent
+                            // to the light source location, and if the light source location is set to block sight, do not illuminate it
+                            // , or generate any reflections. This prevents light-sources embedded into the walls from illuminating the 
+                            // adjacent wall tiles or creating spurious reflections inside walls. 
                             let mut adjacent_solid_light_source: bool = false;
                             if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && ((map_check_coords.1 - map_light_coords.1).abs() == 1)) && map[map_light_coords.0 as usize][map_light_coords.1 as usize].block_sight {
                                 adjacent_solid_light_source = true;
                             }
-                            if FOV_LIGHT_WALLS && !adjacent_solid_light_source {
-                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
-                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
+                            if !adjacent_solid_light_source {
+                                if FOV_LIGHT_WALLS {
+                                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < field_ray_brightness.0 {
+                                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = field_ray_brightness.0;
+                                    }
+                                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < field_ray_brightness.1 {
+                                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = field_ray_brightness.1;
+                                    }
+                                    if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < field_ray_brightness.2 {
+                                        light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = field_ray_brightness.2;
+                                    }
                                 }
-                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < ray_g_brightness {
-                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = ray_g_brightness;
-                                }
-                                if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < ray_b_brightness {
-                                    light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = ray_b_brightness;
-                                }
+                                // This is where we need to add the code to check if we need to generate a reflection child light field.
+                                //
+                                // We have our alpha_angle, three color channel brightnesses, etc.
+                                // -----------------------------------------------------------------------------------------------------
+                                //
+                                // With the new modifications to the light field calulation functions, to add a reflection we just need
+                                // to append an object that will generate the reflection to [resulting_reflections]. This list of light
+                                // -source objects will be returned, and then used by the calling function to generate the resulting
+                                // light fields. The process is then repeated. Once this function returns without any resulting reflect
+                                // -tions, we're done for this parent object :D.
+                                //
+                                //                                               H E R E
+                                //
+                                // -----------------------------------------------------------------------------------------------------
                             }
                             target_index = target_index + 1;
                             continue 'target_x;
@@ -367,14 +364,14 @@ impl LightFieldObject {
                         // The ray is inside a location that does not block sight. If the ray brightness values in each
                         // channel are higher than the current value stored for that location in this light field, over-
                         // write them.
-                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
-                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < field_ray_brightness.0 {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = field_ray_brightness.0;
                         }
-                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < ray_g_brightness {
-                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = ray_g_brightness;
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 < field_ray_brightness.1 {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].1 = field_ray_brightness.1;
                         }
-                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < ray_b_brightness {
-                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = ray_b_brightness;
+                        if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 < field_ray_brightness.2 {
+                            light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].2 = field_ray_brightness.2;
                         }
                         continue 'ray;
                     }
