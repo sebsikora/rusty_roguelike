@@ -33,10 +33,13 @@ const MAX_ROOMS: i32 = 30;
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
+
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
+const REFLECTION_LEVEL: i32 = 0;
+
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -93,7 +96,7 @@ impl Rect {
 }
 
 
-// Define our lightfield object.
+// Define our light field object.
 #[derive(Debug)]
 struct LightFieldObject {
     // LightFieldObject just stores a vector of LightFields and their associated
@@ -102,6 +105,7 @@ struct LightFieldObject {
 }
 
 impl LightFieldObject {
+    // But - the methods are what is important.
     pub fn new() -> LightFieldObject {
         let light_field: LightField = vec![vec![(0.0, 0.0, 0.0); 1 as usize]; 1 as usize];
         let map_offset_start: (i32, i32) = (0, 0);
@@ -112,6 +116,8 @@ impl LightFieldObject {
         }
     }
     
+    // Public function that can be called on an object LightFieldObject to reacalculate it's immediate
+    // LightField, and if requested, iteratively calculate any resulting reflections.
     pub fn recalculate(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) {
         // Zero the LightFieldObject vector.
         let light_field: LightField = vec![vec![(0.0, 0.0, 0.0); 1 as usize]; 1 as usize];
@@ -122,7 +128,7 @@ impl LightFieldObject {
         // Create an empty vector buffer to hold any temporary light-source objects that will be created by any reflections
         // resulting from the first, parent pass at recalculating the object light field.
         let mut outer_buffer: Vec<Object> = vec![];
-        let initial_result: (LightField, (i32, i32), (i32, i32), Vec<Object>) = self.compute_lightfields(map, pos_x, pos_y, intensity_profile, direction, angular_sweep);
+        let initial_result: (LightField, (i32, i32), (i32, i32), Vec<Object>) = self.compute_lightfield(map, pos_x, pos_y, intensity_profile, direction, angular_sweep);
         // Commit the resulting LightFields to the LightFieldObject vector.
         self.light_fields.push((initial_result.0, initial_result.1, initial_result.2));
         
@@ -131,14 +137,15 @@ impl LightFieldObject {
             outer_buffer.push(object);
         }
         
-        // While there are any temporary light objects in the buffer.
-        while outer_buffer.len() > 0 {
+        // While there are any temporary light objects in the buffer...
+        let mut reflection_level_index: i32 = 0;
+        'reflections: while (outer_buffer.len() > 0) && (reflection_level_index < REFLECTION_LEVEL) {
             // Zero a sub-buffer.
             let mut inner_buffer: Vec<Object> = vec![];
             // For each object in the buffer.
             for outer_object in outer_buffer {
                 // Calculate the immediate LightField and resulting further temporary light objects.
-                let new_result = self.compute_lightfields(map, &outer_object.x, &outer_object.y, &outer_object.light_source.1, &outer_object.direction, &outer_object.light_source.2);
+                let new_result = self.compute_lightfield(map, &outer_object.x, &outer_object.y, &outer_object.light_source.1, &outer_object.direction, &outer_object.light_source.2);
                 // Commit the resulting LightField to the LightFieldObject.
                 self.light_fields.push((new_result.0, new_result.1, new_result.2));
                 // Commit the resulting temporary light objects to the sub buffer,
@@ -148,11 +155,13 @@ impl LightFieldObject {
             }
             // Once this pass at the buffer is completed, refill the buffer from the sub buffer and repeat.
             outer_buffer = inner_buffer;
+            reflection_level_index = reflection_level_index + 1;
         }
         // No more resulting reflections, we are done!
     }
     
-    fn compute_lightfields(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) -> (LightField, (i32, i32), (i32, i32), Vec<Object>) {
+    // Private function to actually compute the LightField and reflection details.
+    fn compute_lightfield(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) -> (LightField, (i32, i32), (i32, i32), Vec<Object>) {
         
         let mut resulting_reflections: Vec<Object> = vec![];
         
@@ -266,29 +275,27 @@ impl LightFieldObject {
                 let mut field_travelled_dist_this_target: (f64, (f64, f64)) = (0.0, (0.0, 0.0));
                 
                 'ray: for increment in 0..(field_dist_increments as i32) {
-                    
                     field_ray_coords.0 += field_dist_step_comps.0;
                     field_ray_coords.1 += field_dist_step_comps.1;
-                    
                     field_travelled_dist_this_target.0 += field_dist_step;
                     (field_travelled_dist_this_target.1).0 += field_dist_step_comps.0;
                     (field_travelled_dist_this_target.1).1 += field_dist_step_comps.1;
                     
+                    // Have we left the map?
                     let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + map_offset_start.1);
                     if (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
+                        // If so, continue with next target location in x axis.
                         target_index = target_index + 1;
                         continue 'target_x;
                     }
                     
-                    // Reduce light intensity here...
+                    // Reduce ray brightness -----------------------------------------------------------------------------
                     let mut modulation_distance: f64 = field_travelled_dist_this_target.0 - ILLUMINATION_MODULATION;
                     if modulation_distance < 1.0 {
                         modulation_distance = 1.0;
                     }
-                    
                     //let modulation: f64 = (modulation_distance).powf(1.5);
                     let modulation: f64 = (modulation_distance).powi(2);
-                    
                     field_ray_brightness.0 = float_light_r_intensity / modulation;
                     if field_ray_brightness.0 > float_light_r_intensity {
                         field_ray_brightness.0 = float_light_r_intensity;
@@ -304,10 +311,11 @@ impl LightFieldObject {
                     let ray_r_brightness: f64 = field_ray_brightness.0;
                     let ray_g_brightness: f64 = field_ray_brightness.1;
                     let ray_b_brightness: f64 = field_ray_brightness.2;
+                    // ---------------------------------------------------------------------------------------------------
+                    
                     
                     let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
                     
-                    // ----------------------------------
                     if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
                         if !((map_check_coords.0 == map_light_coords.0) && (map_check_coords.1 == map_light_coords.1)) {
                             // The ray his hit an opaque thing, that is not at the same co-ordinates as the light-source.
@@ -316,13 +324,15 @@ impl LightFieldObject {
                             //
                             // We have our alpha_angle, three color channel brightnesses, etc.
                             // -----------------------------------------------------------------------------------------------------
-                            
+                            //
                             // With the new modifications to the light field calulation functions, to add a reflection we just need
                             // to append an object that will generate the reflection to [resulting_reflections]. This list of light
                             // -source objects will be returned, and then used by the calling function to generate the resulting
                             // light fields. The process is then repeated. Once this function returns without any resulting reflect
                             // -tions, we're done for this parent object :D.
-                            
+                            //
+                            //                                               H E R E
+                            //
                             // -----------------------------------------------------------------------------------------------------
                             
                             // Then, if the opaque target the ray has hit occupies a location immediately horizontally or vertically
@@ -371,7 +381,7 @@ impl LightFieldObject {
             }
         }
         
-        // Return any resulting refections.
+        // Return the results.
         (light_field, map_offset_start, map_offset_end, resulting_reflections)
     }
 }
@@ -397,7 +407,7 @@ impl Object {
         // compute() method just yet, so it just retains the little placeholder stub for now. We can light it up later!
         let mut light_field_object: LightFieldObject = LightFieldObject::new();
         
-        // However, if it is lit, the compute it's lightfield and position limits.
+        // However, if it is lit, compute it's lightfield and position limits.
         if light_source.0 {
             light_field_object.recalculate(&map, &x, &y, &light_source.1, &direction, &light_source.2);
         }
@@ -430,8 +440,6 @@ impl Object {
             if dy < 0 {
                 self.direction = 270.0;
             }
-            //println!("Direction {}", self.direction);
-            
             // If the object is illuminated, we will need to recompute it's light field
             // whenever it moves. Strictly, we only need to recompute the light field whenever
             // it moves if we have reflections enabled, otherwise symmetrical light fields do
@@ -673,7 +681,6 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     // -- Code to turn linearised total brightness into a log brightness --
                     display_color = correct_colors(&float_r_channel_output, &float_g_channel_output, &float_b_channel_output);
                     // --------------------------------------------------------------------
-                    //display_color = ((float_r_channel_output * 255.0) as i32, (float_g_channel_output * 255.0) as i32, (float_b_channel_output * 255.0) as i32);
                     *explored = true;
                     
                 } else {
@@ -817,6 +824,7 @@ fn main() {
     // on first pass of game loop.
     let mut previous_player_position = (-1, -1);
     let mut previous_flashlight_state = true;
+    
     // Generate master illumination map.
     //
     // This is a vector field of (f64, f64, f64) illumination values. These are zeroed at the start of each
@@ -824,13 +832,13 @@ fn main() {
     // it. Tiles and Objects are drawn with their 'lightness' value scaled according to this value
     // at their position. The values are re-scaled from the native linear 0.0 -> 1.0 to
     // log 0.0 -> 1.0.
-    
     let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
     // Main world loop.
     while !root.window_closed() {
         // Set flag to recompute fov is player position has changed.
         let fov_recompute = (previous_player_position != (objects[0].x, objects[0].y)) || (previous_flashlight_state != objects[0].light_source.0);
+        
         // Draw all objects in objects list into composition terminal.
         render_all(&mut root, &mut con, &objects, &mut map, &mut fov_map, fov_recompute, &mut light_field);
         
