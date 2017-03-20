@@ -336,13 +336,14 @@ impl LightFieldObject {
                             // -----------------------------------------------------------------------------------------------------
                             
                             // Then, if the opaque target the ray has hit occupies a location immediately horizontally or vertically
-                            // adjacent to the light source location, do not illuminate it. This prevents light-sources embedded into
-                            // the walls from illuminating the adjacent wall tiles. 
-                            let mut adjacent: bool = false;
-                            if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && (map_check_coords.1 - map_light_coords.1).abs() == 1) {
-                                adjacent = true;
+                            // adjacent to the light source location, and if the light source location is set to block sight, do not 
+                            // illuminate it. This prevents light-sources embedded into the walls from illuminating the adjacent wall 
+                            // tiles. 
+                            let mut adjacent_solid_light_source: bool = false;
+                            if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && ((map_check_coords.1 - map_light_coords.1).abs() == 1)) && map[map_light_coords.0 as usize][map_light_coords.1 as usize].block_sight {
+                                adjacent_solid_light_source = true;
                             }
-                            if FOV_LIGHT_WALLS && !adjacent {
+                            if FOV_LIGHT_WALLS && !adjacent_solid_light_source {
                                 if light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 < ray_r_brightness {
                                     light_field[field_write_coords.0 as usize][field_write_coords.1 as usize].0 = ray_r_brightness;
                                 }
@@ -564,7 +565,7 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
             light_sources.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
             light_sources.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
             
-            // Add mid-side lights pointint inwards.
+            // Add mid-side lights pointing inwards.
             light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y1 + 0, 90.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
             light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y2 - 0, 270.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
             light_sources.push(Object::new(&map, new_room.x1 + 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 0.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
