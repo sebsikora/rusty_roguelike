@@ -27,7 +27,7 @@ const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
 const ROOM_MAX_SIZE: i32 = 20;
-const ROOM_MIN_SIZE: i32 = 10;
+const ROOM_MIN_SIZE: i32 = 15;
 const MAX_ROOMS: i32 = 30;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
@@ -38,7 +38,7 @@ const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
-const REFLECTION_LEVEL: i32 = 0;
+const REFLECTION_LEVEL: i32 = 2;
 
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -132,37 +132,109 @@ impl LightFieldObject {
         // Commit the resulting LightFields to the LightFieldObject vector.
         self.light_fields.push((initial_result.0, initial_result.1, initial_result.2));
         
-        // Place any resulting objects into the buffer.
-        for object in initial_result.3 {
-            outer_buffer.push(object);
+        if REFLECTION_LEVEL > 0 {
+        // ---------------------------------------------------------------------
+        println!("------------------------   Reflections 0   ------------------------");
+        println!("(Outer buffer) {} unfiltered initial reflections.", (initial_result.3).len());
+        let mut resolved_objects = vec![];
+        for object_outer in &(initial_result.3) {
+            let mut resolved_object: (i32, i32, f64) = (0, 0, 0.0);
+            if !resolved_objects.contains(&(object_outer.x, object_outer.y, object_outer.direction)) {
+                let mut found: bool = false;
+                let mut inner_x: i32 = 0;
+                let mut inner_y: i32 = 0;
+                let mut inner_direction: f64 = 0.0;
+                let mut inner_intensity: (f64, f64, f64) = (0.0, 0.0, 0.0);
+                let mut inner_sweep: f64 = 0.0;
+                
+                for object_inner in &(initial_result.3) {
+                    if (object_outer.x == object_inner.x) && (object_outer.y == object_inner.y) && (object_outer.direction == object_inner.direction) {
+                        if ((object_inner.light_source.1).0 + (object_inner.light_source.1).1 + (object_inner.light_source.1).2) > ((object_outer.light_source.1).0 + (object_outer.light_source.1).1 + (object_outer.light_source.1).2) {
+                            found = true;
+                            inner_x = object_inner.x;
+                            inner_y = object_inner.y;
+                            inner_direction = object_inner.direction;
+                            inner_intensity = object_inner.light_source.1;
+                            inner_sweep = object_inner.light_source.2;
+                        }
+                    }
+                }
+                
+                if found {
+                    outer_buffer.push(Object::new(&map, inner_x, inner_y, inner_direction, ' ', (0.0, 0.0, 0.0), (true, inner_intensity, inner_sweep), true));
+                    resolved_object = (inner_x, inner_y, inner_direction);
+                } else {
+                    outer_buffer.push(Object::new(&map, object_outer.x, object_outer.y, object_outer.direction, ' ', (0.0, 0.0, 0.0), (true, (object_outer.light_source).1, (object_outer.light_source).2), true));
+                    resolved_object = (object_outer.x, object_outer.y, object_outer.direction);
+                }
+            }
+            resolved_objects.push(resolved_object);
         }
+        println!("(Outer buffer) {} filtered reflections.", outer_buffer.len());
         
+        // -------------------------------------------------------------------------------
         // While there are any temporary light objects in the buffer...
         let mut reflection_level_index: i32 = 0;
-        'reflections: while (outer_buffer.len() > 0) && (reflection_level_index < REFLECTION_LEVEL) {
+        'reflections: while (outer_buffer.len() > 0) && (reflection_level_index < (REFLECTION_LEVEL - 1)) {
+            println!("------------------------   Reflection level {}   ------------------------", reflection_level_index + 1);
             // Zero a sub-buffer.
             let mut inner_buffer: Vec<Object> = vec![];
             // For each object in the buffer.
-            for outer_object in outer_buffer {
+            let mut sub_reflection_index: i32 = 0;
+            'sub_reflections: for outer_object in &outer_buffer {
                 // Calculate the immediate LightField and resulting further temporary light objects.
                 let new_result = self.compute_lightfield(map, &outer_object.x, &outer_object.y, &outer_object.light_source.1, &outer_object.direction, &outer_object.light_source.2);
+                println!("(---> Reflection {}, {} : (In buffer) {} resulting unfiltered reflections.", reflection_level_index + 1, sub_reflection_index, (new_result.3).len());
                 // Commit the resulting LightField to the LightFieldObject.
                 self.light_fields.push((new_result.0, new_result.1, new_result.2));
                 // Commit the resulting temporary light objects to the sub buffer,
-                for object in new_result.3 {
-                    inner_buffer.push(object);
+                let mut resolved_objects = vec![];
+                for object_outer in &(new_result.3) {
+                    let mut resolved_object: (i32, i32, f64) = (0, 0, 0.0);
+                    if !resolved_objects.contains(&(object_outer.x, object_outer.y, object_outer.direction)) {
+                        let mut found: bool = false;
+                        let mut inner_x: i32 = 0;
+                        let mut inner_y: i32 = 0;
+                        let mut inner_direction: f64 = 0.0;
+                        let mut inner_intensity: (f64, f64, f64) = (0.0, 0.0, 0.0);
+                        let mut inner_sweep: f64 = 0.0;
+                        
+                        for object_inner in &(new_result.3) {
+                            if (object_outer.x == object_inner.x) && (object_outer.y == object_inner.y) && (object_outer.direction == object_inner.direction) {
+                                if ((object_inner.light_source.1).0 + (object_inner.light_source.1).1 + (object_inner.light_source.1).2) > ((object_outer.light_source.1).0 + (object_outer.light_source.1).1 + (object_outer.light_source.1).2) {
+                                    found = true;
+                                    inner_x = object_inner.x;
+                                    inner_y = object_inner.y;
+                                    inner_direction = object_inner.direction;
+                                    inner_intensity = object_inner.light_source.1;
+                                    inner_sweep = object_inner.light_source.2;
+                                }
+                            }
+                        }
+                        
+                        if found {
+                            inner_buffer.push(Object::new(&map, inner_x, inner_y, inner_direction, ' ', (0.0, 0.0, 0.0), (true, inner_intensity, inner_sweep), true));
+                            resolved_object = (inner_x, inner_y, inner_direction);
+                        } else {
+                            inner_buffer.push(Object::new(&map, object_outer.x, object_outer.y, object_outer.direction, ' ', (0.0, 0.0, 0.0), (true, (object_outer.light_source).1, (object_outer.light_source).2), true));
+                            resolved_object = (object_outer.x, object_outer.y, object_outer.direction);
+                        }
+                    }
+                    resolved_objects.push(resolved_object);
                 }
+                sub_reflection_index = sub_reflection_index + 1;
             }
             // Once this pass at the buffer is completed, refill the buffer from the sub buffer and repeat.
+            println!("(---> Reflection {} result : (Out buffer) {} resulting filtered reflections.", reflection_level_index + 1, inner_buffer.len());
             outer_buffer = inner_buffer;
             reflection_level_index = reflection_level_index + 1;
         }
         // No more resulting reflections, we are done!
     }
+    }
     
     // Private function to actually compute the LightField and reflection details.
     fn compute_lightfield(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64) -> (LightField, (i32, i32), (i32, i32), Vec<Object>) {
-        
         let mut resulting_reflections: Vec<Object> = vec![];
         
         // Determine the maximum intensity
@@ -244,6 +316,7 @@ impl LightFieldObject {
                 }
                 
                 // Apply alpha angle direction modifier.
+                let uncorrected_alpha_angle: f64 = alpha_angle;
                 alpha_angle = alpha_angle - alpha_angle_modifier;
                 if alpha_angle < 0.0 {
                     // Underflow, add 360 deg.
@@ -310,6 +383,12 @@ impl LightFieldObject {
                     }
                     // ---------------------------------------------------------------------------------------------------
                     
+                    // NOTE - Is this a sensible place to put this?? Should I include this check at all? It serves to calm
+                    // down the number of sub-reflections calculated when REFLECTION_LEVEL is set high by killing any rays
+                    // with all channels darker than 0.01.
+                    if (field_ray_brightness.0 < 0.01) && (field_ray_brightness.1 < 0.01) && (field_ray_brightness.2 < 0.01) {
+                        continue 'target_x;
+                    }
                     let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
                     
                     if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
@@ -321,7 +400,7 @@ impl LightFieldObject {
                             // , or generate any reflections. This prevents light-sources embedded into the walls from illuminating the 
                             // adjacent wall tiles or creating spurious reflections inside walls. 
                             let mut adjacent_solid_light_source: bool = false;
-                            if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && ((map_check_coords.1 - map_light_coords.1).abs() == 1)) && map[map_light_coords.0 as usize][map_light_coords.1 as usize].block_sight {
+                            if (((map_check_coords.0 - map_light_coords.0).abs() <= 1) && ((map_check_coords.1 - map_light_coords.1).abs() <= 1)) && !(((map_check_coords.0 - map_light_coords.0).abs() == 1) && ((map_check_coords.1 - map_light_coords.1).abs() == 1)) && map[map_light_coords.0 as usize][map_light_coords.1 as usize].blocked {
                                 adjacent_solid_light_source = true;
                             }
                             if !adjacent_solid_light_source {
@@ -348,7 +427,42 @@ impl LightFieldObject {
                                 // -tions, we're done for this parent object :D.
                                 //
                                 //                                               H E R E
-                                //
+                                
+                                let rtbm: f64 = 0.5;
+                                let reflection_sweep: f64 = 90.0;
+                                
+                                let mut reflection_direction: f64 = 0.0;
+                                if (uncorrected_alpha_angle >= 45.0) && (uncorrected_alpha_angle < 135.0) {
+                                    reflection_direction = 270.0;
+                                } else {
+                                    if (uncorrected_alpha_angle >= 135.0) && (uncorrected_alpha_angle < 225.0) {
+                                        reflection_direction = 0.0;
+                                    } else {
+                                        if (uncorrected_alpha_angle >= 225.0) && (uncorrected_alpha_angle < 315.0) {
+                                            reflection_direction = 90.0;
+                                        } else {
+                                            if (uncorrected_alpha_angle >= 315.0) || (uncorrected_alpha_angle < 45.0) {
+                                                reflection_direction = 180.0;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, reflection_direction, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep), true));
+                                
+                                if map_check_coords.0 < map_light_coords.0 {
+                                    resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, 0.0, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep), true));
+                                }
+                                if map_check_coords.0 > map_light_coords.0 {
+                                    resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, 180.0, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep), true));
+                                }
+                                if map_check_coords.1 < map_light_coords.1 {
+                                    resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, 90.0, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep), true));
+                                }
+                                if map_check_coords.1 > map_light_coords.1 {
+                                    resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, 270.0, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep), true));
+                                }
+                                
                                 // -----------------------------------------------------------------------------------------------------
                             }
                             target_index = target_index + 1;
@@ -378,7 +492,6 @@ impl LightFieldObject {
                 }
             }
         }
-        
         // Return the results.
         (light_field, map_offset_start, map_offset_end, resulting_reflections)
     }
@@ -399,14 +512,14 @@ struct Object {
 
 // Here we define the 'Object' object methods.
 impl Object {
-    pub fn new(map: &Map, x: i32, y: i32, direction: f64, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64), f64)) -> Self {
+    pub fn new(map: &Map, x: i32, y: i32, direction: f64, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64), f64), temporary: bool) -> Self {
         //
         // Create the objects LightFieldObject. If the object is actually unlit, don't run the LightFieldObjects
         // compute() method just yet, so it just retains the little placeholder stub for now. We can light it up later!
         let mut light_field_object: LightFieldObject = LightFieldObject::new();
         
         // However, if it is lit, compute it's lightfield and position limits.
-        if light_source.0 {
+        if light_source.0 && !temporary {
             light_field_object.recalculate(&map, &x, &y, &light_source.1, &direction, &light_source.2);
         }
         
@@ -553,20 +666,20 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
                 }
             }
             
-            // Add corner lights pointing inwards diagonally.
-            let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
-            let torch_brightness: (f64, f64, f64) = (0.5, 0.5, 0.5);
-            let torch_angle: f64 = 45.0;
-            light_sources.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
-            light_sources.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
-            light_sources.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
-            light_sources.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle)));
-            
-            // Add mid-side lights pointing inwards.
-            light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y1 + 0, 90.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
-            light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y2 - 0, 270.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
-            light_sources.push(Object::new(&map, new_room.x1 + 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 0.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
-            light_sources.push(Object::new(&map, new_room.x2 - 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 180.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0)));
+            //~// Add corner lights pointing inwards diagonally.
+            //~let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
+            //~let torch_brightness: (f64, f64, f64) = (0.5, 0.5, 0.5);
+            //~let torch_angle: f64 = 45.0;
+            //~light_sources.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
+            //~light_sources.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
+            //~light_sources.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
+            //~light_sources.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
+            //~
+            //~// Add mid-side lights pointing inwards.
+            //~light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y1 + 0, 90.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
+            //~light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y2 - 0, 270.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
+            //~light_sources.push(Object::new(&map, new_room.x1 + 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 0.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
+            //~light_sources.push(Object::new(&map, new_room.x2 - 0, ((new_room.y2 - 1 - new_room.y1 + 1) / 2) + (new_room.y1 + 1), 180.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
             
             rooms.push(new_room);
         }
@@ -800,8 +913,8 @@ fn main() {
     
     // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (2.0, 2.0, 2.0), 30.0)));
-    objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0)));
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 45.0), false));
+    objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0), false));
     
     // Append the light-sources created during room creation to the objects vector.
     for light_source in light_sources {
