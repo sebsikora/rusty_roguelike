@@ -38,6 +38,7 @@ const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
+const RAYCAST_FINENESS: i32 = 10;
 const REFLECTION_LEVEL: i32 = 3;
 const REFLECTION_STATUS: bool = true;
 
@@ -385,26 +386,30 @@ impl LightFieldObject {
         // light source to the target, one for each color channel.
         let mut targets_list = vec![];
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
-            targets_list.push((x_ind as i32, map_offset_start.1));
-            //targets_list.push((x_ind as i32, map_offset_start.1 + 1));
+            for subray_index in 0..RAYCAST_FINENESS {
+                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), map_offset_start.1 as f64));
+            }
         }
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
-            targets_list.push((x_ind as i32, map_offset_end.1));
-            //targets_list.push((x_ind as i32, map_offset_end.1 - 1));
+            for subray_index in 0..RAYCAST_FINENESS {
+                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), map_offset_end.1 as f64));
+            }
         }
-        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1 - 1) {
-            targets_list.push((map_offset_start.0 as i32, y_ind));
-            //targets_list.push((map_offset_start.0 + 1 as i32, y_ind));
+        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1) {
+            for subray_index in 0..RAYCAST_FINENESS {
+                targets_list.push((map_offset_start.0 as f64, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+            }
         }
-        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1 - 1) {
-            targets_list.push((map_offset_end.0 as i32, y_ind));
-            //targets_list.push((map_offset_end.0 - 1 as i32, y_ind));
+        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1) {
+            for subray_index in 0..RAYCAST_FINENESS {
+                targets_list.push((map_offset_end.0 as f64, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+            }
         }
         
         let mut target_index: i32 = 0;
         'target: for current_target in targets_list {
-            let map_target_x_coord: i32 = current_target.0;
-            let map_target_y_coord: i32 = current_target.1;
+            let map_target_x_coord: f64 = current_target.0 as f64;
+            let map_target_y_coord: f64 = current_target.1 as f64;
                 // Get co-ordinates of target tile and distance components from light-source to
                 // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just
                 // by adding the start offset and truncating).
