@@ -28,7 +28,7 @@ const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
 const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 15;
-const MAX_ROOMS: i32 = 30;
+const MAX_ROOMS: i32 = 5;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
@@ -38,8 +38,8 @@ const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
-const REFLECTION_LEVEL: i32 = 1;
-
+const REFLECTION_LEVEL: i32 = 2;
+const REFLECTION_STATUS: bool = false;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -202,8 +202,10 @@ impl LightFieldObject {
         
         if REFLECTION_LEVEL > 0 {
             // ---------------------------------------------------------------------
-            println!("------------------------   Reflections 0   ------------------------");
-            println!("(In buffer) {} unfiltered initial reflections.", (initial_result.3).len());
+            if REFLECTION_STATUS {
+                println!("------------------------   Reflections 0   ------------------------");
+                println!("(In buffer) {} unfiltered initial reflections.", (initial_result.3).len());
+            }
             let mut resolved_objects = vec![];
             for object_outer in &(initial_result.3) {
                 let mut resolved_object: (i32, i32, f64) = (0, 0, 0.0);
@@ -240,13 +242,17 @@ impl LightFieldObject {
                 }
                 resolved_objects.push(resolved_object);
             }
-            println!("(Out buffer) {} filtered reflections.", outer_buffer.len());
+            if REFLECTION_STATUS {
+                println!("(Out buffer) {} filtered reflections.", outer_buffer.len());
+            }
             
             // -------------------------------------------------------------------------------
             // While there are any temporary light objects in the buffer...
             let mut reflection_level_index: i32 = 0;
             'reflections: while (outer_buffer.len() > 0) && (reflection_level_index < (REFLECTION_LEVEL)) {
-                println!("------------------------   Reflection level {}   ------------------------", reflection_level_index + 1);
+                if REFLECTION_STATUS {
+                    println!("------------------------   Reflection level {}   ------------------------", reflection_level_index + 1);
+                }
                 // Zero a sub-buffer.
                 let mut inner_buffer: Vec<Object> = vec![];
                 // For each object in the buffer.
@@ -254,7 +260,9 @@ impl LightFieldObject {
                 'sub_reflections: for outer_object in &outer_buffer {
                     // Calculate the immediate LightField and resulting further temporary light objects.
                     let new_result = self.compute_lightfield(map, &outer_object.x, &outer_object.y, &outer_object.light_source.1, &outer_object.direction, &outer_object.light_source.2, &outer_object.light_source.3, brightness_tables, fov_map);
-                    println!("---> Reflection {}, {} : (In buffer) {} resulting unfiltered reflections.", reflection_level_index + 1, sub_reflection_index, (new_result.3).len());
+                    if REFLECTION_STATUS {
+                        println!("---> Reflection {}, {} : (In buffer) {} resulting unfiltered reflections.", reflection_level_index + 1, sub_reflection_index, (new_result.3).len());
+                    }
                     // Commit the resulting LightField to the LightFieldObject.
                     self.light_fields.push((new_result.0, new_result.1, new_result.2));
                     // Commit the resulting temporary light objects to the sub buffer,
@@ -297,7 +305,9 @@ impl LightFieldObject {
                     sub_reflection_index = sub_reflection_index + 1;
                 }
                 // Once this pass at the buffer is completed, refill the buffer from the sub buffer and repeat.
-                println!("---> Reflection {} result : (Out buffer) {} resulting filtered reflections.", reflection_level_index + 1, inner_buffer.len());
+                if REFLECTION_STATUS {
+                    println!("---> Reflection {} result : (Out buffer) {} resulting filtered reflections.", reflection_level_index + 1, inner_buffer.len());
+                }
                 outer_buffer = inner_buffer;
                 reflection_level_index = reflection_level_index + 1;
             }
@@ -326,6 +336,7 @@ impl LightFieldObject {
         if float_light_radius > (MAP_WIDTH as f64).max(MAP_HEIGHT as f64) * 2.0 {
             float_light_radius = (MAP_WIDTH as f64).max(MAP_HEIGHT as f64) * 2.0
         }
+        //println!("{}", float_light_radius);
         
         // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
         // tiles to the periphery of the light field.
@@ -346,6 +357,9 @@ impl LightFieldObject {
         let map_light_coords: (i32, i32) = (*pos_x, *pos_y);
         let map_offset_start: (i32, i32) = ((map_light_coords.0 - int_light_radius), (map_light_coords.1 - int_light_radius));
         let map_offset_end: (i32, i32) = ((map_light_coords.0 + int_light_radius), (map_light_coords.1 + int_light_radius));
+        
+        // Recalculate FOV for this object.
+        fov_map.compute_fov(*pos_x, *pos_y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
         
         // Calculate the light-source co-ordinates in field space (as opposed to map space).
         //
@@ -374,11 +388,12 @@ impl LightFieldObject {
                 let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.5) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.5) - (map_offset_start.1 as f64));
                 let field_light_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
-                // Are within the bounds of the map.
+                // Is target within the bounds of the map?
                 if !((map_target_x_coord < 0) || (map_target_x_coord > (MAP_WIDTH - 1)) || (map_target_y_coord < 0) || (map_target_y_coord > (MAP_HEIGHT - 1))) {
                     // Is it in the overall field of view?
                     let visible = fov_map.is_in_fov(map_target_x_coord, map_target_y_coord);
                     if !visible {
+                        //println!("{} Not visible", map_target_x_coord);
                         // If so, continue with next target location in x axis.
                         target_index = target_index + 1;
                         continue 'target_x;
@@ -711,14 +726,13 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 
 // Map creation function.
 //
-fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
+fn make_map(brightness_tables: &BrightnessTables, fov_map: &mut FovMap) -> (Map, (i32, i32), Vec<Rect>) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
     let mut starting_position = (0, 0);
         
     let mut rooms = vec![];
-    let mut light_sources = vec![];
     
     for _ in 0..MAX_ROOMS {
         let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
@@ -760,15 +774,6 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
                 }
             }
             
-            //~// Add corner lights pointing inwards diagonally.
-            //~let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
-            //~let torch_brightness: (f64, f64, f64) = (0.6, 0.6, 0.6);
-            //~let torch_angle: f64 = 45.0;
-            //~light_sources.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
-            //~light_sources.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
-            //~light_sources.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
-            //~light_sources.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle), false));
-            //~
             //~// Add mid-side lights pointing inwards.
             //~light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y1 + 0, 90.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
             //~light_sources.push(Object::new(&map, ((new_room.x2 - 1 - new_room.x1 + 1) / 2) + (new_room.x1 + 1), new_room.y2 - 0, 270.0, '*', COLOR_PLAYER, (true, torch_brightness, torch_angle * 2.0), false));
@@ -779,7 +784,7 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>, Vec<Object>) {
         }
     }
     
-    (map, starting_position, rooms, light_sources)
+    (map, starting_position, rooms)
 }
 
 
@@ -1005,11 +1010,13 @@ fn main() {
     // Create our 'composition' terminal, off-screen, in which we will compose each frame.
     let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
     
+    // Create the FOV map.
+    let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
+    
     // Instantiate a map.
-    let (mut map, (player_x, player_y), rooms, light_sources) = make_map();
+    let (mut map, (player_x, player_y), rooms) = make_map(&brightness_tables, &mut fov_map);
     
     // Setup field of view map.
-    let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
             fov_map.set(x, y, 
@@ -1023,13 +1030,25 @@ fn main() {
     
     // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 45.0, 40.0), false, &brightness_tables, &mut fov_map));
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 0.0), 45.0, 90.0), false, &brightness_tables, &mut fov_map));
     objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0, 0.0), false, &brightness_tables, &mut fov_map));
     
-    // Append the light-sources created during room creation to the objects vector.
-    for light_source in light_sources {
-        objects.push(light_source);
+    for new_room in rooms {
+        // Add corner lights pointing inwards diagonally.
+        let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
+        let torch_brightness: (f64, f64, f64) = (0.5, 0.5, 0.5);
+        let torch_angle: f64 = 45.0;
+        let torch_collimation: f64 = 70.0;
+        objects.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation), false, &brightness_tables, &mut fov_map));
+        objects.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation), false, &brightness_tables, &mut fov_map));
+        objects.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation), false, &brightness_tables, &mut fov_map));
+        objects.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation), false, &brightness_tables, &mut fov_map));
     }
+            
+    //~// Append the light-sources created during room creation to the objects vector.
+    //~for light_source in light_sources {
+        //~objects.push(light_source);
+    //~}
     
     // Set a ficticious previous player position to make sure that fov is calculated
     // on first pass of game loop.
