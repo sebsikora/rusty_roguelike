@@ -390,7 +390,7 @@ impl LightFieldObject {
         }
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_end.1 as f64) - 0.95));
+                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_end.1 as f64) + 0.05));
             }
         }
         for y_ind in (map_offset_start.1)..(map_offset_end.1) {
@@ -400,7 +400,7 @@ impl LightFieldObject {
         }
         for y_ind in (map_offset_start.1)..(map_offset_end.1) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((map_offset_end.0 as f64) - 0.95, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+                targets_list.push(((map_offset_end.0 as f64) + 0.05, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
             }
         }
         
@@ -419,18 +419,21 @@ impl LightFieldObject {
                 // the corresponding target alpha angle.
                 let mut alpha_angle: f64 = 0.0;
                 let atan_rad: f64 = ((field_light_target_dist_comps.1) / (field_light_target_dist_comps.0)).atan();
-                let atan_deg: f64 = atan_rad.to_degrees();
+                let atan_deg: f64 = atan_rad.to_degrees().abs();
                 if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
                     alpha_angle = atan_deg.abs();
-                }
-                if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
-                    alpha_angle = 180.0 - atan_deg.abs();
-                }
-                if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 < 0.0) {
-                    alpha_angle = atan_deg.abs() + 180.0;
-                }
-                if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 < 0.0) {
-                    alpha_angle = 360.0 - atan_deg.abs();
+                } else {
+                    if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 >= 0.0) {
+                        alpha_angle = 180.0 - atan_deg.abs();
+                    } else {
+                        if (field_light_target_dist_comps.0 < 0.0) && (field_light_target_dist_comps.1 < 0.0) {
+                            alpha_angle = atan_deg.abs() + 180.0;
+                        } else {
+                            if (field_light_target_dist_comps.0 >= 0.0) && (field_light_target_dist_comps.1 < 0.0) {
+                                alpha_angle = 360.0 - atan_deg.abs();
+                            }
+                        }
+                    }
                 }
                 
                 // Apply alpha angle direction modifier.
@@ -597,7 +600,7 @@ impl LightFieldObject {
                                 if ray_alpha_angle < 0.0 {
                                     ray_alpha_angle = ray_alpha_angle + 360.0;
                                 } else {
-                                    if ray_alpha_angle > 360.0 {
+                                    if ray_alpha_angle >= 360.0 {
                                         ray_alpha_angle = ray_alpha_angle - 360.0;
                                     }
                                 }
