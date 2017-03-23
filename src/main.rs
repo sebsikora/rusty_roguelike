@@ -26,8 +26,8 @@ const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.1, 0.1);
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
-const ROOM_MAX_SIZE: i32 = 25;
-const ROOM_MIN_SIZE: i32 = 10;
+const ROOM_MAX_SIZE: i32 = 35;
+const ROOM_MIN_SIZE: i32 = 15;
 const MAX_ROOMS: i32 = 5;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
@@ -39,7 +39,7 @@ const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
 const RAYCAST_FINENESS: i32 = 5;
-const REFLECTION_LEVEL: i32 = 5;
+const REFLECTION_LEVEL: i32 = 1;
 const REFLECTION_STATUS: bool = false;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
@@ -380,32 +380,31 @@ impl LightFieldObject {
         // This value is subtracted from the alpha angle calculated for each target tile, in effect rotating the light source.
         let alpha_angle_modifier: f64 = *direction;
         
-        // This is an inverse ray-casting (shadow casting?).
-        //
-        // We iterate through all of the target tiles within the light field and cast three rays from the
-        // light source to the target, one for each color channel.
+        // Identify target tiles along periphery of LightField. Create RAYCAST_FINENESS target points spaced 0.05 deep within the
+        // inner edges of each of those targets. 
         let mut targets_list = vec![];
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), map_offset_start.1 as f64));
+                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_start.1 as f64) + 0.95));
             }
         }
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), map_offset_end.1 as f64));
+                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_end.1 as f64) - 0.95));
             }
         }
-        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1) {
+        for y_ind in (map_offset_start.1)..(map_offset_end.1) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push((map_offset_start.0 as f64, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+                targets_list.push(((map_offset_start.0 as f64) + 0.95, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
             }
         }
-        for y_ind in (map_offset_start.1 + 1)..(map_offset_end.1) {
+        for y_ind in (map_offset_start.1)..(map_offset_end.1) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push((map_offset_end.0 as f64, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+                targets_list.push(((map_offset_end.0 as f64) - 0.95, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
             }
         }
         
+        // Begin iterating through the list of targets.
         let mut target_index: i32 = 0;
         'target: for current_target in targets_list {
             let map_target_x_coord: f64 = current_target.0 as f64;
@@ -413,7 +412,7 @@ impl LightFieldObject {
                 // Get co-ordinates of target tile and distance components from light-source to
                 // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just
                 // by adding the start offset and truncating).
-                let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.5) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.5) - (map_offset_start.1 as f64));
+                let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.0) - (map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.0) - (map_offset_start.1 as f64));
                 let field_light_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
                 // Determine which quadrant the target is in with respect to alpha = 0 deg and calculate
@@ -441,7 +440,7 @@ impl LightFieldObject {
                     // Underflow, add 360 deg.
                     alpha_angle = alpha_angle + 360.0;
                 } else {
-                    if alpha_angle > 360.0 {
+                    if alpha_angle >= 360.0 {
                         // Overflow, subtract 360 deg.
                         alpha_angle = alpha_angle - 360.0;
                     }
@@ -534,32 +533,84 @@ impl LightFieldObject {
                                 // Generate appropriate reflection light-source object . Rather than being appended to the master
                                 // objects list, this will be appended to a temporary vector which is then returned along with the
                                 // object LightField and light field bounding box coordinates.
-                                let rtbm: f64 = 0.9;
-                                let reflection_sweep: f64 = 45.0;
-                                let reflection_collimation: f64 = 90.0;
+                                //let rtbm: f64 = 1.0 / ((RAYCAST_FINENESS as f64) * 6.0);
+                                let rtbm: f64 = 0.1;
+                                let reflection_sweep: f64 = beam_sweep;
+                                let reflection_collimation: f64 = *collimation;
                                 let mut reflection_direction: f64 = 0.0;
-                                if (uncorrected_alpha_angle >= 0.0) && (uncorrected_alpha_angle < 180.0) {
-                                    reflection_direction = 270.0;
+                                
+                                // Determine target face with which ray has come into contact, and appropriately
+                                // set ray direction modifiers which will flip either the x or y ray component.
+                                let floating_target: (f64, f64) = (map_check_coords.0 as f64, map_check_coords.1 as f64);
+                                let mut contact: i32 = 0;
+                                if ((field_ray_coords.0 >= (floating_target.0 - (map_offset_start.0 as f64))) && (field_ray_coords.0 < (floating_target.0 - (map_offset_start.0 as f64) + 0.05))) && ((field_ray_coords.1 >= (floating_target.1 - (map_offset_start.1 as f64)) + 0.05) && (field_ray_coords.1 < (floating_target.1 - (map_offset_start.1 as f64)) + 0.95)) {
+                                    contact = 2;
                                 } else {
-                                    if (uncorrected_alpha_angle >= 180.0) && (uncorrected_alpha_angle < 360.0) {
-                                        reflection_direction = 90.0;
+                                    if ((field_ray_coords.0 >= (floating_target.0 - (map_offset_start.0 as f64) + 0.95)) && (field_ray_coords.0 < (floating_target.0 - (map_offset_start.0 as f64) + 1.0))) && ((field_ray_coords.1 >= (floating_target.1 - (map_offset_start.1 as f64)) + 0.05) && (field_ray_coords.1 < (floating_target.1 - (map_offset_start.1 as f64)) + 0.95)) {
+                                        contact = 0;
+                                    } else {
+                                        if ((field_ray_coords.1 >= (floating_target.1 - (map_offset_start.1 as f64))) && (field_ray_coords.1 < (floating_target.1 - (map_offset_start.1 as f64) + 0.05))) && ((field_ray_coords.0 >= (floating_target.0 - (map_offset_start.0 as f64)) + 0.05) && (field_ray_coords.0 < (floating_target.0 - (map_offset_start.0 as f64)) + 0.95)) {
+                                            contact = 3;
+                                        } else {
+                                            if ((field_ray_coords.1 >= (floating_target.1 - (map_offset_start.1 as f64) + 0.95)) && (field_ray_coords.1 < (floating_target.1 - (map_offset_start.1 as f64) + 1.0))) && ((field_ray_coords.0 >= (floating_target.0 - (map_offset_start.0 as f64)) + 0.05) && (field_ray_coords.0 < (floating_target.0 - (map_offset_start.0 as f64)) + 0.95)) {
+                                                contact = 1;
+                                            }
+                                        }
                                     }
                                 }
-                                resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, reflection_direction, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep, reflection_collimation), true, brightness_tables, fov_map));
                                 
-                                if (uncorrected_alpha_angle >= 270.0) && (uncorrected_alpha_angle < 90.0) {
-                                    reflection_direction = 180.0;
+                                // ------- Determine ray direction: ------- 
+                                let mut ray_alpha_angle: f64 = 0.0;
+                                let ray_atan_rad: f64 = ((field_dist_step_comps.1) / (field_dist_step_comps.0)).atan();
+                                let ray_atan_deg: f64 = (ray_atan_rad.to_degrees()).abs();
+                                if contact == 0 {
+                                    if field_dist_step_comps.1 < 0.0 {
+                                        ray_alpha_angle = 360.0 - ray_atan_deg;
+                                    } else {
+                                        ray_alpha_angle = ray_atan_deg;
+                                    }
                                 } else {
-                                    if (uncorrected_alpha_angle >= 90.0) && (uncorrected_alpha_angle < 270.0) {
-                                        reflection_direction = 0.0;
+                                    if contact == 1 {
+                                        if field_dist_step_comps.0 < 0.0 {
+                                            ray_alpha_angle = 180.0 - ray_atan_deg;
+                                        } else {
+                                            ray_alpha_angle = ray_atan_deg;
+                                        }
+                                    } else {
+                                        if contact == 2 {
+                                            if field_dist_step_comps.1 < 0.0 {
+                                                ray_alpha_angle = 180.0 + ray_atan_deg;
+                                            } else {
+                                                ray_alpha_angle = 180.0 - ray_atan_deg;
+                                            }
+                                        } else {
+                                            if contact == 3 {
+                                                if field_dist_step_comps.0 < 0.0 {
+                                                    ray_alpha_angle = 180.0 + ray_atan_deg;
+                                                } else {
+                                                    ray_alpha_angle = 360.0 - ray_atan_deg;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                                resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, reflection_direction, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep, reflection_collimation), true, brightness_tables, fov_map));
+                                if ray_alpha_angle < 0.0 {
+                                    ray_alpha_angle = ray_alpha_angle + 360.0;
+                                } else {
+                                    if ray_alpha_angle > 360.0 {
+                                        ray_alpha_angle = ray_alpha_angle - 360.0;
+                                    }
+                                }
+                                // ------- ------- ------- ------- ------- 
                                 
+                                resulting_reflections.push(Object::new(&map, map_check_coords.0, map_check_coords.1, ray_alpha_angle, ' ', (0.0, 0.0, 0.0), (true, ((field_ray_brightness.0 * rtbm), (field_ray_brightness.1 * rtbm), (field_ray_brightness.2 * rtbm)), reflection_sweep, reflection_collimation), true, brightness_tables, fov_map));
+                                
+                                target_index = target_index + 1;
+                                continue 'target;
                                 // -----------------------------------------------------------------------------------------------------
+                            } else {
+                                continue 'ray;
                             }
-                            target_index = target_index + 1;
-                            continue 'target;
                         } else {
                             // The ray has hit an opaque thing, but is still in the same map location as the light-source.
                             //
@@ -754,10 +805,24 @@ fn make_map(brightness_tables: &BrightnessTables) -> (Map, (i32, i32), Vec<Rect>
             // Get the centre co-ordinates of the room.
             let (new_x, new_y) = new_room.center();
             
+            // Create 3x3 central island.
+            map[(new_x - 1) as usize][(new_y - 1) as usize].blocked = true;
+            map[(new_x - 1) as usize][(new_y - 1) as usize].block_sight = true;
+            map[(new_x - 1) as usize][(new_y - 1) as usize].color = COLOR_WALL;
+            map[(new_x + 1) as usize][(new_y - 1) as usize].blocked = true;
+            map[(new_x + 1) as usize][(new_y - 1) as usize].block_sight = true;
+            map[(new_x + 1) as usize][(new_y - 1) as usize].color = COLOR_WALL;
+            map[(new_x - 1) as usize][(new_y + 1) as usize].blocked = true;
+            map[(new_x - 1) as usize][(new_y + 1) as usize].block_sight = true;
+            map[(new_x - 1) as usize][(new_y + 1) as usize].color = COLOR_WALL;
+            map[(new_x + 1) as usize][(new_y + 1) as usize].blocked = true;
+            map[(new_x + 1) as usize][(new_y + 1) as usize].block_sight = true;
+            map[(new_x + 1) as usize][(new_y + 1) as usize].color = COLOR_WALL;
+            
             if rooms.is_empty() {
                 // Then this is the first room, so we set the player start
                 // co-ordinates appropriately.
-                starting_position = (new_x, new_y);
+                starting_position = (new_x + 3, new_y + 3);
             } else {
                 // All other rooms after the first.
                 // Connect it to the previous room with a tunnel.
