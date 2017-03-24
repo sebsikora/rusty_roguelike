@@ -365,7 +365,7 @@ impl LightFieldObject {
         let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.1 as usize]; light_field_dimensions.0 as usize];
         
         // Recalculate FOV for the current illuminated object.
-        fov_map.compute_fov(*pos_x, *pos_y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+        //fov_map.compute_fov(*pos_x, *pos_y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
         
         // Calculate the light-source co-ordinates in field space (as opposed to map space).
         //
@@ -384,23 +384,23 @@ impl LightFieldObject {
         // inner edges of each of those targets. 
         let mut targets_list = vec![];
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
-            for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_start.1 as f64) + 0.95));
+            for subray_index in 0..RAYCAST_FINENESS {   
+                targets_list.push(((x_ind as f64) + (0.5/(RAYCAST_FINENESS as f64)) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_start.1 as f64) + 0.95));
             }
         }
         for x_ind in (map_offset_start.0)..(map_offset_end.0) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((x_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_end.1 as f64) + 0.05));
+                targets_list.push(((x_ind as f64) + (0.5/(RAYCAST_FINENESS as f64)) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64)), (map_offset_end.1 as f64) + 0.05));
             }
         }
         for y_ind in (map_offset_start.1)..(map_offset_end.1) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((map_offset_start.0 as f64) + 0.95, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+                targets_list.push(((map_offset_start.0 as f64) + 0.95, (y_ind as f64) + (0.5/(RAYCAST_FINENESS as f64)) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
             }
         }
         for y_ind in (map_offset_start.1)..(map_offset_end.1) {
             for subray_index in 0..RAYCAST_FINENESS {
-                targets_list.push(((map_offset_end.0 as f64) + 0.05, (y_ind as f64) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
+                targets_list.push(((map_offset_end.0 as f64) + 0.05, (y_ind as f64) + (0.5/(RAYCAST_FINENESS as f64)) + ((1.0/(RAYCAST_FINENESS as f64))*(subray_index as f64))));
             }
         }
         
@@ -612,6 +612,7 @@ impl LightFieldObject {
                                 continue 'target;
                                 // -----------------------------------------------------------------------------------------------------
                             } else {
+                                
                                 continue 'ray;
                             }
                         } else {
