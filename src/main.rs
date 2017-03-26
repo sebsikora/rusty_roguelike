@@ -233,6 +233,7 @@ impl LightFieldObject {
         let map_offset_end = light_field_result.1;
         let mut light_field = light_field_result.2;
         
+        
         // Determine light-source floating-point position offset allowing for light-source direction.
         let pos_offset = self.rotate_float_offset(float_offset, direction);
         
@@ -241,6 +242,7 @@ impl LightFieldObject {
         // add the start offset and .trunc() :D
         // First, we need to rotate the floating point position offset according to the light-source direction.
         let field_light_coords: (f64, f64) = ((((map_light_coords.0 as f64) + 0.5) - (map_offset_start.0 as f64)) + pos_offset.0, (((map_light_coords.1 as f64) + 0.5) - (map_offset_start.1 as f64)) + pos_offset.1);
+        
         
         // Identify target tiles along periphery of LightField.
         let targets_list = self.locate_perimeter_targets(&map_offset_start, &map_offset_end);
