@@ -26,8 +26,8 @@ const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.1, 0.1);
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
-const ROOM_MAX_SIZE: i32 = 25;
-const ROOM_MIN_SIZE: i32 = 10;
+const ROOM_MAX_SIZE: i32 = 30;
+const ROOM_MIN_SIZE: i32 = 20;
 const MAX_ROOMS: i32 = 8;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
@@ -37,9 +37,9 @@ const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const ILLUMINATION_MODULATION: f64 = 0.0;
-const RAYCAST_DISTANCE_STEP: f64 = 0.05;
-const RAYCAST_FINENESS: i32 = 8;
-const REFLECTION_LEVEL: i32 = 1;
+const RAYCAST_DISTANCE_STEP: f64 = 0.01;
+const RAYCAST_FINENESS: i32 = 3;
+const REFLECTION_LEVEL: i32 = 2;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -244,20 +244,58 @@ impl LightFieldObject {
         let mut total_reflections: i32 = 0;
         let mut result = self.compute_lightfield(&mut index, map, &(*pos_x, *pos_y), intensity_profile, direction, angular_sweep, collimation, float_offset, brightness_tables);
         self.light_fields.push((result.0, result.1, result.2));
-        
+        println!("-----------------------------------------------------");
         for level in 0..REFLECTION_LEVEL {
+            println!(" ------ Level {} ------ ", level); 
+            println!("Unfiltered reflections: {}", (&result.3).len());
+            
+            let mut unique_location_directions = vec![];
             let mut reflections = vec![];
-            for candidate_reflection in result.3 {
+            
+            for candidate_reflection in &result.3 {
+                let mut flag: bool = false;
+                if !unique_location_directions.contains(&(candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction)) {
+                    flag = true;
+                }
+                if flag == true {
+                    unique_location_directions.push((candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction));
+                }
+            }
+            
+            let mut final_reflections = vec![];
+            
+            for averaging_location in &unique_location_directions {
+                let mut average_intensity: (f64, f64, f64) = (0.0, 0.0, 0.0);
+                let mut count: i32 = 0;
+                for current_reflection in &result.3 {
+                    if (current_reflection.x == averaging_location.0) && (current_reflection.y == averaging_location.1) && (current_reflection.direction == averaging_location.2) {
+                        average_intensity.0 += (current_reflection.intensity_profile).0;
+                        average_intensity.1 += (current_reflection.intensity_profile).1;
+                        average_intensity.2 += (current_reflection.intensity_profile).2;
+                        count += 1;
+                    }
+                }
+                average_intensity.0 = average_intensity.0 / (count as f64);
+                average_intensity.1 = average_intensity.1 / (count as f64);
+                average_intensity.2 = average_intensity.2 / (count as f64);
+                final_reflections.push(ChildReflection::new(averaging_location.0, averaging_location.1, (0.5, 0.0), averaging_location.2, average_intensity, 180.0, 90.0));
+            }
+            
+            println!("Filtered reflections: {}", (&final_reflections).len());
+            
+            for candidate_reflection in final_reflections {
                 let new_result = self.compute_lightfield(&mut index, map, &(candidate_reflection.x, candidate_reflection.y), &candidate_reflection.intensity_profile, &candidate_reflection.direction, &candidate_reflection.angular_sweep, &candidate_reflection.collimation, &candidate_reflection.float_offset, brightness_tables);
+                
                 self.light_fields.push((new_result.0, new_result.1, new_result.2));
+                
                 for current_reflection in new_result.3 {
                     reflections.push(current_reflection);
                     total_reflections += 1;
                 }
+                
             }
             result.3 = reflections;
         }
-        //println!("{}", total_reflections);
     }
     
     // Private function to actually compute the LightField and reflection details.
@@ -291,7 +329,7 @@ impl LightFieldObject {
         // Identify target tiles along periphery of LightField.
         let targets_list = self.locate_perimeter_targets(&map_offset_start, &map_offset_end);
         let mut candidate_reflections = vec![];
-        let mut candidate_reflection_locations = vec![];
+        //let mut candidate_reflection_locations = vec![];
         
         // Begin iterating through the list of targets.
         let mut target_index: i32 = 0;
@@ -358,14 +396,10 @@ impl LightFieldObject {
                                         // to generate a candidate reflection.
                                         self.overwrite_tile(&mut light_field, &field_ray_brightness, &field_write_coords);
                                         self.index_field[field_write_coords.0 as usize][field_write_coords.1 as usize] = *index;
-                                        //~// Create candidate reflection.
-                                        if !candidate_reflection_locations.contains(&(map_check_coords.0, map_check_coords.1)) {
-                                            let trb = field_ray_brightness.0 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).0;
-                                            let tgb = field_ray_brightness.1 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).1;
-                                            let tbb = field_ray_brightness.2 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).2;
-                                            candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, (0.0, 0.0), 0.0, (trb, tgb, tbb), 180.0, 90.0));
-                                            candidate_reflection_locations.push((map_check_coords.0, map_check_coords.1));
-                                        }
+                                        // Create candidate reflection.
+                                        let reflection_direction: f64 = self.determine_collision_face(&field_ray_coords);
+                                        let reflection_profile = self.attenuate_ray(&field_ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color);
+                                        candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, (0.5, 0.0), reflection_direction, reflection_profile, 50.0, 70.0));
                                     }
                                 }
                                 target_index = target_index + 1;
@@ -380,13 +414,9 @@ impl LightFieldObject {
                                     self.overwrite_tile(&mut light_field, &field_ray_brightness, &field_write_coords);
                                     self.index_field[field_write_coords.0 as usize][field_write_coords.1 as usize] = *index;
                                     // Create candidate reflection.
-                                    if !candidate_reflection_locations.contains(&(map_check_coords.0, map_check_coords.1)) {
-                                        let trb = field_ray_brightness.0 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).0;
-                                        let tgb = field_ray_brightness.1 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).1;
-                                        let tbb = field_ray_brightness.2 * (map[map_check_coords.0 as usize][map_check_coords.1 as usize].color).2;
-                                        candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, (0.0, 0.0), 0.0, (trb, tgb, tbb), 180.0, 90.0));
-                                        candidate_reflection_locations.push((map_check_coords.0, map_check_coords.1));
-                                    }
+                                    let reflection_direction: f64 = self.determine_collision_face(&field_ray_coords);
+                                    let reflection_profile = self.attenuate_ray(&field_ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color);
+                                    candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, (0.5, 0.0), reflection_direction, reflection_profile, 50.0, 70.0));
                                 }
                                 target_index = target_index + 1;
                                 continue 'target;
@@ -410,6 +440,33 @@ impl LightFieldObject {
             (light_field, map_offset_start, map_offset_end, candidate_reflections)
     }
     
+    fn determine_collision_face(&mut self, field_ray_coords: &(f64, f64)) -> f64 {
+        let field_ray_coordinates: (f64, f64) = (field_ray_coords.0 - (field_ray_coords.0).trunc(), field_ray_coords.1 - (field_ray_coords.1).trunc());
+        let field_tile_coordinates: (f64, f64) = (0.0, 0.0);
+        let mut face: f64 = 0.0;
+        
+        if ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.9)) && (field_ray_coordinates.0 < (field_tile_coordinates.0 + 1.0))) && ((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.0)) && (field_ray_coordinates.1 < (field_tile_coordinates.1 + 1.0))) && (((field_ray_coordinates.1 < (field_tile_coordinates.1 + 0.5)) && (field_ray_coordinates.1 > ((-1.0 * field_ray_coordinates.0) + 1.0))) || ((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.5)) && (field_ray_coordinates.0 >= field_ray_coordinates.1))) {
+            face = 0.0;
+        }
+        if ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.0)) && (field_ray_coordinates.0 < (field_tile_coordinates.0 + 1.0))) && ((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.9)) && (field_ray_coordinates.1 < (field_tile_coordinates.1 + 1.0))) && (((field_ray_coordinates.0 < (field_tile_coordinates.0 + 0.5)) && (field_ray_coordinates.1 >= ((-1.0 * field_ray_coordinates.0) + 1.0))) || ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.5)) && (field_ray_coordinates.0 < field_ray_coordinates.1))) {
+            face = 90.0;
+        }
+        if ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.0)) && (field_ray_coordinates.0 < (field_tile_coordinates.0 + 0.1))) && ((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.0)) && (field_ray_coordinates.1 < (field_tile_coordinates.1 + 1.0))) && (((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.5)) && (field_ray_coordinates.1 < ((-1.0 * field_ray_coordinates.0) + 1.0))) || ((field_ray_coordinates.1 <= (field_tile_coordinates.1 + 0.5)) && (field_ray_coordinates.0 <= field_ray_coordinates.1))) {
+            face = 180.0;
+        }
+        if ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.0)) && (field_ray_coordinates.0 < (field_tile_coordinates.0 + 1.0))) && ((field_ray_coordinates.1 >= (field_tile_coordinates.1 + 0.0)) && (field_ray_coordinates.1 < (field_tile_coordinates.1 + 0.1))) && (((field_ray_coordinates.0 <= (field_tile_coordinates.1 + 0.5)) && (field_ray_coordinates.0 > field_ray_coordinates.1)) || ((field_ray_coordinates.0 >= (field_tile_coordinates.0 + 0.5)) && (field_ray_coordinates.1 <= ((-1.0 * field_ray_coordinates.0) + 1.0)))) {
+            face = 270.0;
+        }
+        face
+    }
+    
+    fn attenuate_ray(&mut self, ray_intensity: &(f64, f64, f64), tile_color: &(f64, f64, f64)) -> (f64, f64, f64) {
+        let trb = ray_intensity.0 * tile_color.0;
+        let tgb = ray_intensity.1 * tile_color.1;
+        let tbb = ray_intensity.2 * tile_color.2;
+        (trb, tgb, tbb)
+    }
+    
     fn overwrite_tile(&mut self, light_field: &mut LightField, ray_brightness: &(f64, f64, f64), field_coords: &(i32, i32)) {
         if light_field[field_coords.0 as usize][field_coords.1 as usize].0 < ray_brightness.0 {
             light_field[field_coords.0 as usize][field_coords.1 as usize].0 = ray_brightness.0;
@@ -424,7 +481,7 @@ impl LightFieldObject {
     
     fn check_adjacent(&mut self, map_target_position: &(i32, i32), map_light_source_position: &(i32, i32)) -> bool {
         let mut adjacent: bool = false;
-        if (((map_target_position.0 - map_light_source_position.0) == 0) && ((map_target_position.1 - map_light_source_position.1).abs() == 1)) || (((map_target_position.0 - map_light_source_position.0) == 1) && ((map_target_position.1 - map_light_source_position.1).abs() == 0)) {
+        if (((map_target_position.0 - map_light_source_position.0) == 0) && ((map_target_position.1 - map_light_source_position.1).abs() == 1)) || (((map_target_position.0 - map_light_source_position.0).abs() == 1) && ((map_target_position.1 - map_light_source_position.1) == 0)) {
             adjacent = true;
         }
         adjacent
@@ -1065,14 +1122,14 @@ fn main() {
     
     // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 35.0, 60.0, (0.4, 0.0), true), false, &brightness_tables));
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0, 20.0, (0.4, 0.0), true), false, &brightness_tables));
     objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0, 0.0, (0.4, 0.0), true), false, &brightness_tables));
     
-    // Populate created rooms with light objects.
+    //~// Populate created rooms with light objects.
     //~for new_room in rooms {
         //~// Add corner lights pointing inwards diagonally.
         //~let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
-        //~let torch_brightness: (f64, f64, f64) = (1.0, 1.0, 0.0);
+        //~let torch_brightness: (f64, f64, f64) = (0.3, 0.3, 0.0);
         //~let torch_angle: f64 = 45.0;
         //~let torch_collimation: f64 = 70.0;
         //~let float_offset: (f64, f64) = (0.0, 0.0);
