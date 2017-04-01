@@ -26,7 +26,7 @@ const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.1, 0.1);
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
-const ROOM_MAX_SIZE: i32 = 20;
+const ROOM_MAX_SIZE: i32 = 30;
 const ROOM_MIN_SIZE: i32 = 10;
 const MAX_ROOMS: i32 = 8;
 
@@ -36,17 +36,15 @@ const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
-const ILLUMINATION_MODULATION: f64 = 0.0;
-const RAYCAST_DISTANCE_STEP: f64 = 0.01;
+const RAYCAST_DISTANCE_STEP: f64 = 0.05;
 const RAYCAST_FINENESS: i32 = 1;
-const REFLECTION_LEVEL: i32 = 3;
-const REFLECTION_BRIGHTNESS_SCALING: f64 = 2.0;
+const REFLECTION_LEVEL: i32 = 4;
+const REFLECTION_BRIGHTNESS_SCALING: f64 = 1.0;
 const RAYCAST_INFO: bool = false;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
 type LightField = Vec<Vec<(f64, f64, f64)>>;
-type IndexField = Vec<Vec<i32>>;
 
 // Define a 'Tile' object.
 #[derive(Clone, Copy, Debug)]
@@ -112,7 +110,6 @@ impl BrightnessTables {
             if angle > 90.0 {
                 angle = 90.0;
             }
-            let mut distance: f64 = 0.0;
             let mut table = vec![];
             let power_coeff: f64 = angle / 45.0;
             for increment in 0..4001 {
@@ -129,17 +126,15 @@ impl BrightnessTables {
             if collimation > 90.0 {
                 collimation = 90.0;
             }
-            let mut power_coeff_2: f64 = 0.0;
             let mut table_2 = vec![];
             let power_coeff_2: f64 = collimation / 45.0;
             for increment_2 in 0..1001 {
                 let brightness: f64 = (increment_2 as f64) * 0.001;
-                let mut distance_2: f64 = 0.0;
-                if power_coeff_2 == 0.0 {
-                    distance_2 = 4000.0;
+                let distance_2: f64 = if power_coeff_2 == 0.0 {
+                    4000.0
                 } else {
-                    distance_2 = (brightness / 0.002).powf(1.0/power_coeff_2);
-                }
+                    (brightness / 0.002).powf(1.0/power_coeff_2)
+                };
                 table_2.push(distance_2);
             }
             distance_tables.push(table_2);
@@ -162,7 +157,7 @@ impl BrightnessTables {
         }
         let brightness_index: i32 = ((dist - 1.0) * 20.0) as i32;
         let power_index: i32 = (coll * 2.0) as i32; 
-        let mut brightness_scaling = self.brightness_tables[power_index as usize][brightness_index as usize];
+        let brightness_scaling = self.brightness_tables[power_index as usize][brightness_index as usize];
         brightness_scaling
     }
     
@@ -177,7 +172,7 @@ impl BrightnessTables {
         }
         let distance_index: i32 = (bright * 1000.0) as i32;
         let power_index: i32 = (coll * 2.0) as i32; 
-        let mut distance = self.distance_tables[power_index as usize][distance_index as usize];
+        let distance = self.distance_tables[power_index as usize][distance_index as usize];
         distance
     }
 }
@@ -187,7 +182,6 @@ impl BrightnessTables {
 struct ChildReflection {
     x: i32,
     y: i32,
-    index_offset: (i32, i32),
     float_offset: (f64, f64),
     direction: f64,
     intensity_profile: (f64, f64, f64),
@@ -197,11 +191,10 @@ struct ChildReflection {
 
 // Rect object methods.
 impl ChildReflection {
-    pub fn new(x: i32, y: i32, index_offset: (i32, i32), float_offset: (f64, f64), direction: f64, intensity_profile: (f64, f64, f64), angular_sweep: f64, collimation: f64) -> ChildReflection {
+    pub fn new(x: i32, y: i32, float_offset: (f64, f64), direction: f64, intensity_profile: (f64, f64, f64), angular_sweep: f64, collimation: f64) -> ChildReflection {
         ChildReflection {
             x: x,
             y: y,
-            index_offset: index_offset,
             float_offset: float_offset,
             direction: direction,
             intensity_profile: intensity_profile,
@@ -238,125 +231,72 @@ impl LightFieldObject {
     // Public function that can be called on an object LightFieldObject to reacalculate it's immediate
     // LightField, and if requested, iteratively calculate any resulting reflections.
     pub fn recalculate(&mut self, map: &Map, pos_x: &i32, pos_y: &i32, float_offset: &(f64, f64), intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64, collimation: &f64, brightness_tables: &BrightnessTables) {
-        // Zero the LightFieldObject light-field.
-        self.light_field = vec![];
         
-        // Zero the light-field index. Each light-field spawned by this LightFieldObject will increment the index. Rays cast only illuminate
-        // light-field locations if no prior light-field has illuminated the same location, by reference to the index-field. Rays can over-write
-        // light-field locations lit by prior casts of the same light-field.
-        let mut index: i32 = 0;
-        
-        let mut candidate_reflections = self.compute_lightfield(&mut index, &(0, 0), map, &(*pos_x, *pos_y), intensity_profile, direction, angular_sweep, collimation, float_offset, brightness_tables);
-        
-        for level in 0..REFLECTION_LEVEL {
-            if RAYCAST_INFO == true {
-                println!(" ------ Level {} ------ ", level); 
-                println!("Unfiltered reflections: {}", (&candidate_reflections).len());
-            }
-            let mut unique_location_directions = vec![];
-            
-            for candidate_reflection in &candidate_reflections {
-                let mut flag: bool = false;
-                if !unique_location_directions.contains(&(candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction)) {
-                    flag = true;
-                }
-                if flag == true {
-                    unique_location_directions.push((candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction));
-                }
-            }
-            
-            let mut final_reflections = vec![];
-                
-            for averaging_location in &unique_location_directions {
-                let mut average_intensity: (f64, f64, f64) = (0.0, 0.0, 0.0);
-                let mut index_offset: (i32, i32) = (0, 0);
-                let mut count: i32 = 0;
-                for current_reflection in &candidate_reflections {
-                    if (current_reflection.x == averaging_location.0) && (current_reflection.y == averaging_location.1) && (current_reflection.direction == averaging_location.2) {
-                        average_intensity.0 += (current_reflection.intensity_profile).0;
-                        average_intensity.1 += (current_reflection.intensity_profile).1;
-                        average_intensity.2 += (current_reflection.intensity_profile).2;
-                        index_offset = current_reflection.index_offset;
-                        count += 1;
-                    }
-                }
-                average_intensity.0 = average_intensity.0 / (count as f64);
-                average_intensity.1 = average_intensity.1 / (count as f64);
-                average_intensity.2 = average_intensity.2 / (count as f64);
-                final_reflections.push(ChildReflection::new(averaging_location.0, averaging_location.1, index_offset, (0.5, 0.0), averaging_location.2, average_intensity, 90.0, 90.0));
-            }
-            if RAYCAST_INFO == true {
-                println!("Filtered reflections: {}", (&final_reflections).len());
-            }
-            
-            let mut child_reflections = vec![];
-            
-            for candidate_reflection in final_reflections {
-                child_reflections = self.compute_lightfield(&mut index, &candidate_reflection.index_offset, map, &(candidate_reflection.x, candidate_reflection.y), &candidate_reflection.intensity_profile, &candidate_reflection.direction, &candidate_reflection.angular_sweep, &candidate_reflection.collimation, &candidate_reflection.float_offset, brightness_tables);
-                let ans = self.rotate_float_offset(&candidate_reflection.float_offset, &candidate_reflection.direction);
-                if RAYCAST_INFO == true {
-                    println!("{}    {}  {}", candidate_reflection.direction, ans.0, ans.1);
-                }
-            }
-            
-            candidate_reflections = child_reflections;
-        }
-    }
-    
-    // Private function to actually compute the LightField and reflection details.
-    fn compute_lightfield(&mut self, index: &mut i32, reflection_index_offset: &(i32, i32), map: &Map, position: &(i32, i32), intensity_profile: &(f64, f64, f64), direction: &f64, angular_sweep: &f64, collimation: &f64, float_offset: &(f64, f64), brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
-        // Determine angle modifier to set 'direction'.
-        // This value is subtracted from the alpha angle calculated for each target tile, in effect rotating the light source.
-        // It is also used to determine the rotated position of the light source + offset, as the offset is always defined with
-        // respect to an object pointing in direction 0.0.
-        let alpha_angle_modifier: f64 = *direction;
-        let map_light_coords: (i32, i32) = (position.0, position.1);
+        //let alpha_angle_modifier: f64 = *direction;
+        let map_light_coords: (i32, i32) = (*pos_x, *pos_y);
         
         // Get beam sweep angle - either side of the beam centre (alpha angle = 0 deg).
         let beam_sweep: f64 = *angular_sweep;
         
-        if *index == 0 {
-            // Determine light-field dimensions and create empty LightField. Also, the determine_light_field_dimensions() function will
-            // create a zeroed-out index field of the same dimensions.
-            let light_field_result = self.determine_light_field_dimensions(&index, position, intensity_profile, brightness_tables, collimation);
-            self.map_offset_start = light_field_result.0;
-            self.map_offset_end = light_field_result.1;
-            self.light_field = light_field_result.2;
-        }
+        // Determine light-field dimensions and create empty LightField. Also, the determine_light_field_dimensions() function will
+        // create a zeroed-out index field of the same dimensions.
+        let light_field_result = self.determine_light_field_dimensions(&map_light_coords, intensity_profile, brightness_tables, collimation);
+        self.map_offset_start = light_field_result.0;
+        self.map_offset_end = light_field_result.1;
+        self.light_field = light_field_result.2;
         
         // Determine light-source floating-point position offset allowing for light-source direction.
         let pos_offset = self.rotate_float_offset(float_offset, direction);
-        
-        // Calculate the light-source co-ordinates in field space (as opposed to map space).
-        // NOTE - Adding 0.5 to each makes it easy to convert back from map space to field space - we just need to
-        // add the start offset and .trunc() :D
-        // First, we need to rotate the floating point position offset according to the light-source direction.
-        let field_light_coords: (f64, f64) = ((((map_light_coords.0 as f64) + 0.5) - (self.map_offset_start.0 as f64)) + pos_offset.0, (((map_light_coords.1 as f64) + 0.5) - (self.map_offset_start.1 as f64)) + pos_offset.1);
+        // Determine light-source position.
+        let field_light_coords: (f64, f64) = ((map_light_coords.0 as f64) + 0.5 + pos_offset.0 - (self.map_offset_start.0 as f64), (map_light_coords.1 as f64) + 0.5 + pos_offset.1 - (self.map_offset_start.1 as f64));
         
         // Identify target tiles along periphery of LightField.
-        let targets_list = self.locate_perimeter_targets(&self.map_offset_start, &self.map_offset_end);
+        let map_targets_list = self.locate_perimeter_targets(&self.map_offset_start, &self.map_offset_end);
         
-        // Set up child reflections vector.
+        // Shadowcasting begins! Cast rays, modify LightField accordingly 
+        let mut candidate_reflections = self.raycast(map, &map_targets_list, &map_light_coords, &field_light_coords, direction, &beam_sweep, intensity_profile, collimation, brightness_tables);
+        
+        let mut reflection_level_index: i32 = 0;
+        
+        while reflection_level_index < REFLECTION_LEVEL {
+            if (&candidate_reflections).len() > 0 {
+                let final_reflections = self.filter_candidate_reflections(candidate_reflections);
+                if RAYCAST_INFO == true {
+                    println!("---------------------------- Level {} --------------------------", reflection_level_index + 1);
+                    println!("{} filtered reflections.", (&final_reflections).len());
+                }
+                let mut results_this_level = vec![];
+                for reflection in &final_reflections {
+                    let r_pos_offset = self.rotate_float_offset(&(reflection.float_offset), &(reflection.direction));
+                    let r_field_light_coords: (f64, f64) = ((reflection.x as f64) + 0.5 + r_pos_offset.0 - (self.map_offset_start.0 as f64), (reflection.y as f64) + 0.5 + r_pos_offset.1 - (self.map_offset_start.1 as f64));
+                    let results_this_child = self.raycast(map, &map_targets_list, &(reflection.x, reflection.y), &r_field_light_coords, &(reflection.direction), &(reflection.angular_sweep), &(reflection.intensity_profile), &reflection.collimation, brightness_tables);
+                    for result in results_this_child {
+                        results_this_level.push(result);
+                    }
+                }
+                candidate_reflections = results_this_level;
+            }
+            reflection_level_index += 1;
+        }
+    }
+    
+    fn raycast(&mut self, map: &Map, map_targets_list: &Vec<(f64, f64)>, map_light_coords: &(i32, i32), field_light_coords: &(f64, f64), direction: &f64, beam_sweep: &f64, intensity_profile: &(f64, f64, f64), collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
         let mut candidate_reflections = vec![];
-        
-        // Begin iterating through the list of targets.
-        let mut target_index: i32 = 0;
-        'target: for current_target in targets_list {
+        'target: for current_target in map_targets_list {
             let map_target_x_coord: f64 = current_target.0 as f64;
             let map_target_y_coord: f64 = current_target.1 as f64;
                 // Get co-ordinates of target tile and distance components from light-source to
                 // target tile in field space (again, adding 0.5 to make it easy to convert back to map space just
                 // by adding the start offset and truncating).
-                let field_target_coords: (f64, f64) = (((map_target_x_coord as f64) + 0.0) - (self.map_offset_start.0 as f64), ((map_target_y_coord as f64) + 0.0) - (self.map_offset_start.1 as f64));
+                let field_target_coords: (f64, f64) = ((map_target_x_coord as f64) - (self.map_offset_start.0 as f64), (map_target_y_coord as f64) - (self.map_offset_start.1 as f64));
                 let field_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
                 // Determine target alpha angle, corrected for light-source direction.
                 let alpha_angle = self.determine_alpha_angle(&field_target_dist_comps, direction);
                 
                 // Check if we need to cast a ray (Is target tile within angular field of view?)
-                if !((alpha_angle <= beam_sweep) || (alpha_angle >= (360.0 - beam_sweep))) {
+                if !((alpha_angle <= *beam_sweep) || (alpha_angle >= (360.0 - *beam_sweep))) {
                     // If not, stop this pass and start on next target tile in x.
-                    target_index = target_index + 1;
                     continue 'target;
                 }
                 
@@ -366,84 +306,93 @@ impl LightFieldObject {
                 let field_dist_step_comps: (f64, f64) = ((field_target_dist_comps.0 / field_dist_increments), (field_target_dist_comps.1 / field_dist_increments));
                 
                 let mut field_ray_distance: f64 = 0.0;
-                let mut field_ray_coords: (f64, f64) = field_light_coords;
+                let mut field_ray_coords: (f64, f64) = *field_light_coords;
                 let mut field_ray_brightness: (f64, f64, f64) = *intensity_profile;
                 
-                // Shadowcasting begins!
-                'ray: for increment in 0..(field_dist_increments as i32) {
-                    field_ray_coords.0 += field_dist_step_comps.0;
-                    field_ray_coords.1 += field_dist_step_comps.1;
-                    field_ray_distance += field_dist_step;
-                    
-                    // Scale ray brightness.
-                    field_ray_brightness = self.determine_ray_brightness(&field_ray_distance, &field_ray_brightness, intensity_profile, collimation, brightness_tables);
-                    
-                    // NOTE - Is this a sensible place to put this?? Should I include this check at all? It serves to calm
-                    // down the number of sub-reflections calculated when REFLECTION_LEVEL is set high by killing any rays
-                    // with all channels darker than 0.00393 ( = 1/255).
-                    if (field_ray_brightness.0 < 0.00393) && (field_ray_brightness.1 < 0.00393) && (field_ray_brightness.2 < 0.00393) {
-                        continue 'target;
-                    }
-                    // ---------------------------------------------------------------------------------------------------
-                    
-                    let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
-                    let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + self.map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + self.map_offset_start.1);
-                    
-                    // Offset calculation is (I think) correct now. However, we actually want to forget the index-field and just check if any ray component
-                    // intensities are higher than the parent lightfield component intensities at the mapped position.
-                    let field_ray_dist_comps: (i32, i32) = (field_write_coords.0 - ((field_light_coords.0).trunc() as i32), field_write_coords.1 - ((field_light_coords.1).trunc() as i32));
-                    
-                    let mut child_offset: (i32, i32) = (0, 0);
-                    if *index != 0 {
-                        child_offset = (reflection_index_offset.0 + field_ray_dist_comps.0, reflection_index_offset.1 + field_ray_dist_comps.1);
-                    } else {
-                        child_offset = field_write_coords;
-                    }
-                    
-                    if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
-                        if ((map_check_coords.0 == map_light_coords.0) && (map_check_coords.1 == map_light_coords.1)) {
-                            // Ray location blocks sight, but is still the light source location, keep going, without lighting up the ray 
-                            // location.
-                            continue 'ray;
-                        } else {
-                            if self.check_adjacent(&map_check_coords, &map_light_coords) == true {
-                                // Ray location blocks sight, and is adjacent to the light-source.
-                                if !map[map_light_coords.0 as usize][map_light_coords.1 as usize].blocked {
-                                    self.overwrite_tile(&field_ray_brightness, &child_offset);
-                                    // Create candidate reflection.
-                                    let reflection_direction: f64 = self.determine_collision_face(&field_ray_coords);
-                                    let reflection_profile = self.attenuate_ray(&field_ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color);
-                                    candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, child_offset, (0.5, 0.0), reflection_direction, reflection_profile, 90.0, 90.0));
-                                }
-                                target_index = target_index + 1;
-                                continue 'target;
-                            } else {
-                                // Ray location blocks sight, and is *not* adjacent to the light-source. Light up the ray location and then
-                                // start on the next target.
-                                //
-                                // This condition is where we end the current ray and light up the location. This is an appropriate
-                                // condition in which to generate a candidate reflection.
-                                self.overwrite_tile(&field_ray_brightness, &child_offset);
-                                // Create candidate reflection.
-                                let reflection_direction: f64 = self.determine_collision_face(&field_ray_coords);
-                                let reflection_profile = self.attenuate_ray(&field_ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color);
-                                candidate_reflections.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, child_offset, (0.5, 0.0), reflection_direction, reflection_profile, 90.0, 90.0));
-                                target_index = target_index + 1;
-                                continue 'target;
-                            }
-                        }
-                    } else {
-                        // The ray location does *not* block sight. Light up the ray location and keep going.
-                        self.overwrite_tile(&field_ray_brightness, &child_offset);
-                        continue 'ray;
-                    }
+                for reflection in self.cast_ray(map, &map_light_coords, (field_dist_increments as i32), &mut field_ray_distance, field_dist_step, field_dist_step_comps, &mut field_ray_coords, &mut field_ray_brightness, intensity_profile, collimation, brightness_tables) {
+                    candidate_reflections.push(reflection);
+                }
+        }
+        candidate_reflections
+    }
+    
+    fn cast_ray(&mut self, map: &Map, map_light_coords: &(i32, i32), field_dist_increments: i32, field_ray_distance: &mut f64, field_dist_step: f64, field_dist_step_comps: (f64, f64), field_ray_coords: &mut(f64, f64), field_ray_brightness: &mut(f64, f64, f64), intensity_profile: &(f64, f64, f64), collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
+        let mut candidate_reflection = vec![];
+        'ray: for increment in 0..field_dist_increments {
+            field_ray_coords.0 += field_dist_step_comps.0;
+            field_ray_coords.1 += field_dist_step_comps.1;
+            *field_ray_distance += field_dist_step;
+            
+            // Scale ray brightness.
+            *field_ray_brightness = self.determine_ray_brightness(&field_ray_distance, &field_ray_brightness, intensity_profile, collimation, brightness_tables);
+            
+            // NOTE - Is this a sensible place to put this?? Should I include this check at all? It serves to calm
+            // down the number of sub-reflections calculated when REFLECTION_LEVEL is set high by killing any rays
+            // with all channels darker than 0.00393 ( = 1/255).
+            if (field_ray_brightness.0 < 0.00393) && (field_ray_brightness.1 < 0.00393) && (field_ray_brightness.2 < 0.00393) {
+                break 'ray;
+            }
+            // ---------------------------------------------------------------------------------------------------
+            
+            let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
+            let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + self.map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + self.map_offset_start.1);
+            
+            // Check if ray has left the LightField or Map.
+            if (field_write_coords.0 < 0) || (field_write_coords.0 > (self.map_offset_end.0 - self.map_offset_start.0)) || (field_write_coords.1 < 0) || (field_write_coords.1 > (self.map_offset_end.1 - self.map_offset_start.1)) || (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
+                break 'ray;
+            }
+                        
+            if map[map_check_coords.0 as usize][map_check_coords.1 as usize].block_sight {
+                if (map_check_coords.0 == map_light_coords.0) && (map_check_coords.1 == map_light_coords.1) {
+                    // Ray location blocks sight, but is still the light source location, keep going, without lighting up the ray 
+                    // location.
+                    continue 'ray;
+                }
+                // Or, it blocks sight, and is *not* within the light source location. Light the tile up and stop.
+                self.overwrite_tile(&field_ray_brightness, &field_write_coords);
+                // Create candidate reflection.
+                let reflection_direction: f64 = self.determine_collision_face(&field_ray_coords);
+                let reflection_profile = self.attenuate_ray(&field_ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color);
+                candidate_reflection.push(ChildReflection::new(map_check_coords.0, map_check_coords.1, (0.5, 0.0), reflection_direction, reflection_profile, 90.0, 90.0));
+                break 'ray;
+            } else {
+                // The ray location does *not* block sight. Light up the ray location and keep going.
+                self.overwrite_tile(&field_ray_brightness, &field_write_coords);
+                continue 'ray;
+            }
+        }
+        candidate_reflection
+    }
+
+    fn filter_candidate_reflections(&mut self, candidate_reflections: Vec<ChildReflection>) -> Vec<ChildReflection> {
+        let mut unique_location_directions = vec![];    
+        for candidate_reflection in &candidate_reflections {
+            let mut flag: bool = false;
+            if !unique_location_directions.contains(&(candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction)) {
+                flag = true;
+            }
+            if flag == true {
+                unique_location_directions.push((candidate_reflection.x, candidate_reflection.y, candidate_reflection.direction));
+            }
+        }
+        let mut final_reflections = vec![];
+        for averaging_location in &unique_location_directions {
+            let mut average_intensity: (f64, f64, f64) = (0.0, 0.0, 0.0);
+            let mut count: i32 = 0;
+            for current_reflection in &candidate_reflections {
+                if (current_reflection.x == averaging_location.0) && (current_reflection.y == averaging_location.1) && (current_reflection.direction == averaging_location.2) {
+                    average_intensity.0 += (current_reflection.intensity_profile).0;
+                    average_intensity.1 += (current_reflection.intensity_profile).1;
+                    average_intensity.2 += (current_reflection.intensity_profile).2;
+                    count += 1;
                 }
             }
-            // Increment the index in case there are any child reflections.
-            *index = *index + 1;
-            
-            // Return the results.
-            candidate_reflections
+            average_intensity.0 = average_intensity.0 / (count as f64);
+            average_intensity.1 = average_intensity.1 / (count as f64);
+            average_intensity.2 = average_intensity.2 / (count as f64);
+            final_reflections.push(ChildReflection::new(averaging_location.0, averaging_location.1, (0.5, 0.0), averaging_location.2, average_intensity, 90.0, 90.0));
+        }
+        final_reflections
     }
     
     fn determine_collision_face(&mut self, field_ray_coords: &(f64, f64)) -> f64 {
@@ -553,7 +502,7 @@ impl LightFieldObject {
         alpha_angle
     }
     
-    fn determine_light_field_dimensions(&mut self, index: &i32, position: &(i32, i32), intensity_profile: &(f64, f64, f64), brightness_tables: &BrightnessTables, collimation: &f64) -> ((i32, i32), (i32, i32), LightField) {
+    fn determine_light_field_dimensions(&mut self, position: &(i32, i32), intensity_profile: &(f64, f64, f64), brightness_tables: &BrightnessTables, collimation: &f64) -> ((i32, i32), (i32, i32), LightField) {
         // Determine maximum intensity.
         let max_intensity: f64 = (intensity_profile.0).max(intensity_profile.1).max(intensity_profile.2);
         
@@ -561,7 +510,7 @@ impl LightFieldObject {
         // The origin of the 'magic number' comes from the fact that if the reference brightness is defined
         // at a distance of 1.0, then the maximum radius corresponds to the square root of the ratio of initial and 
         // minimum brightnesses. In this case the minimum brightness is 1/255 (8-bit color) = 0.0039215...
-        let mut float_light_radius: f64 = brightness_tables.read_distance_table(&max_intensity, collimation);
+        let float_light_radius: f64 = brightness_tables.read_distance_table(&max_intensity, collimation);
         
         // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
         // tiles to the periphery of the light field.
@@ -593,30 +542,30 @@ impl LightFieldObject {
         }
         
         let light_field_dimensions: (i32, i32) = ((map_offset_end.0 - map_offset_start.0) + 1, (map_offset_end.1 - map_offset_start.1) + 1);
-        let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.1 as usize]; light_field_dimensions.0 as usize];
+        let light_field: LightField = vec![vec![(0.0, 0.0, 0.0); light_field_dimensions.1 as usize]; light_field_dimensions.0 as usize];
         
         (map_offset_start, map_offset_end, light_field)
     }
     
-    fn rotate_float_offset(&mut self, float_offset: &(f64, f64), alpha_angle_modifier: &f64) -> (f64, f64) {
+    fn rotate_float_offset(&self, float_offset: &(f64, f64), alpha_angle_modifier: &f64) -> (f64, f64) {
         let offset_vector_resultant: f64 = ((float_offset.0).powi(2) + (float_offset.1).powi(2)).sqrt();
         let mut pos_offset: (f64, f64) = (0.0, 0.0);
-        if ((float_offset.0 >= 0.0) && (float_offset.1 >= 0.0)) {
+        if (float_offset.0 >= 0.0) && (float_offset.1 >= 0.0) {
             // Quadrant 0.
             pos_offset.0 = offset_vector_resultant * (alpha_angle_modifier.to_radians()).cos();
             pos_offset.1 = offset_vector_resultant * (alpha_angle_modifier.to_radians()).sin();
         } else {
-            if ((float_offset.0 < 0.0) && (float_offset.1 >= 0.0)) {
+            if (float_offset.0 < 0.0) && (float_offset.1 >= 0.0) {
                 // Quadrant 1.
                 pos_offset.0 = -1.0 * offset_vector_resultant * ((180.0 - alpha_angle_modifier).to_radians()).cos();
                 pos_offset.1 = offset_vector_resultant * ((180.0 - alpha_angle_modifier).to_radians()).sin();
             } else {
-                if ((float_offset.0 < 0.0) && (float_offset.1 < 0.0)) {
+                if (float_offset.0 < 0.0) && (float_offset.1 < 0.0) {
                     // Quadrant 2.
                     pos_offset.0 = -1.0 * offset_vector_resultant * ((alpha_angle_modifier - 180.0).to_radians()).cos();
                     pos_offset.1 = -1.0 * offset_vector_resultant * ((alpha_angle_modifier - 180.0).to_radians()).sin();
                 } else {
-                    if ((float_offset.0 >= 0.0) && (float_offset.1 < 0.0)) {
+                    if (float_offset.0 >= 0.0) && (float_offset.1 < 0.0) {
                         // Quadrant 3.
                         pos_offset.0 = offset_vector_resultant * ((360.0 - alpha_angle_modifier).to_radians()).cos();
                         pos_offset.1 = -1.0 * offset_vector_resultant * ((360.0 - alpha_angle_modifier).to_radians()).sin();
@@ -687,8 +636,8 @@ struct Object {
 
 // Here we define the 'Object' object methods.
 impl Object {
-    pub fn new(map: &Map, x: i32, y: i32, direction: f64, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64), f64, f64, (f64, f64), bool), temporary: bool, brightness_tables: &BrightnessTables) -> Self {
-        let mut light_field_object: LightFieldObject = LightFieldObject::new();
+    pub fn new(map: &Map, x: i32, y: i32, direction: f64, char: char, color: (f64, f64, f64), light_source: (bool, (f64, f64, f64), f64, f64, (f64, f64), bool)) -> Self {
+        let light_field_object: LightFieldObject = LightFieldObject::new();
         
         Object {
             x: x,
@@ -740,7 +689,7 @@ impl Object {
         }
     }
     
-    pub fn toggle_light(&mut self, map: &Map) {
+    pub fn toggle_light(&mut self) {
         if !(self.light_source.0) {
             self.light_source.0 = true;
         } else {
@@ -751,7 +700,7 @@ impl Object {
         println!("Flashlight toggled.");
     }
     
-    pub fn pivot(&mut self, map: &Map, clockwise: bool) {
+    pub fn pivot(&mut self, clockwise: bool) {
         if !clockwise {
             self.direction = self.direction + 5.0;
             println!("Turned clockwise.");
@@ -816,7 +765,7 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 
 // Map creation function.
 //
-fn make_map(brightness_tables: &BrightnessTables) -> (Map, (i32, i32), Vec<Rect>) {
+fn make_map() -> (Map, (i32, i32), Vec<Rect>) {
     // Make an empty map from empty tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     let mut starting_position = (0, 0);
@@ -900,17 +849,17 @@ fn handle_keys(root: &mut Root, player: &mut Object, map: &Map) -> bool {
         Key { code: Down, .. } => player.move_by(0, 1, map),
         Key { code: Left, .. } => player.move_by(-1, 0, map),
         Key { code: Right, .. } => player.move_by(1, 0, map),
-        Key { printable: 'a', .. } => player.pivot(map, true),
-        Key { printable: 's', .. } => player.pivot(map, false),
+        Key { printable: 'a', .. } => player.pivot(true),
+        Key { printable: 's', .. } => player.pivot(false),
         // Function keys.
-        Key { printable: 'f', .. } => player.toggle_light(map),
+        Key { printable: 'f', .. } => player.toggle_light(),
         // Default behaviour.
         _ => {},
     }
     false
 }
 
-fn render_all(root: &mut Root, con: &mut Offscreen, objects: &mut[Object], map: &mut Map, fov_map: &mut FovMap, light_field: &mut LightField, brightness_tables: &BrightnessTables) {
+fn render_all(root: &mut Root, con: &mut Offscreen, objects: &mut[Object], map: &mut Map, fov_map: &mut FovMap, light_field: &mut LightField) {
     
     // Recompte player (objects[0]) FOV.
     fov_map.compute_fov((&objects[0]).x, (&objects[0]).y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
@@ -1059,9 +1008,9 @@ fn correct_colors(float_r_channel_output: &f64, float_g_channel_output: &f64, fl
     let c = 1.01214152;
     
     let mut display_color: (i32, i32, i32) = (0, 0, 0);
-    let mut corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
-    let mut corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
-    let mut corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
+    let corrected_r_channel_output: f64 = (((b * float_r_channel_output).exp()) * a) + c;
+    let corrected_g_channel_output: f64 = (((b * float_g_channel_output).exp()) * a) + c;
+    let corrected_b_channel_output: f64 = (((b * float_b_channel_output).exp()) * a) + c;
     
     let mut channels: (f64, f64, f64) = (corrected_r_channel_output, corrected_g_channel_output, corrected_b_channel_output);
     let mut scaling_proportion: f64 = 0.0;
@@ -1113,7 +1062,7 @@ fn main() {
     let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
     
     // Instantiate a map.
-    let (mut map, (player_x, player_y), rooms) = make_map(&brightness_tables);
+    let (mut map, (player_x, player_y), rooms) = make_map();
     
     // Setup field of view map.
     for y in 0..MAP_HEIGHT {
@@ -1127,38 +1076,43 @@ fn main() {
     
     // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0, 60.0, (0.4, 0.0), true), false, &brightness_tables));
-    objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0, 0.0, (0.4, 0.0), true), false, &brightness_tables));
+    objects.push(Object::new(&map, player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0, 40.0, (0.5, 0.0), true)));
+    objects.push(Object::new(&map, player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0, 0.0, (0.4, 0.0), true)));
     
     // Populate created rooms with light objects.
     for new_room in rooms {
         // Add corner lights pointing inwards diagonally.
         let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
-        let torch_brightness: (f64, f64, f64) = (0.3, 0.3, 0.0);
+        let torch_brightness: (f64, f64, f64) = (0.6, 0.6, 0.0);
         let torch_angle: f64 = 45.0;
         let torch_collimation: f64 = 70.0;
         let float_offset: (f64, f64) = (0.0, 0.0);
-        objects.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true), false, &brightness_tables));
-        objects.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true), false, &brightness_tables));
-        objects.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true), false, &brightness_tables));
-        objects.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true), false, &brightness_tables));
+        objects.push(Object::new(&map, new_room.x1+1, new_room.y1+1, directions.0, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true)));
+        objects.push(Object::new(&map, new_room.x2-1, new_room.y1+1, directions.1, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true)));
+        objects.push(Object::new(&map, new_room.x2-1, new_room.y2-1, directions.2, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true)));
+        objects.push(Object::new(&map, new_room.x1+1, new_room.y2-1, directions.3, '*', torch_brightness, (true, torch_brightness, torch_angle, torch_collimation, float_offset, true)));
     }
     
     // Generate master illumination map.
     let mut light_field: LightField = vec![vec![(0.0, 0.0, 0.0); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     
+    let mut old_flashlight_state: bool = (objects[0].light_source).0;
+    let mut old_player_position: (i32, i32) = (objects[0].x, objects[0].y);
+    
     // Main world loop.
     while !root.window_closed() {
-        let mut redraw: bool = false;
         
         // Recalculate direct light-fields if necessary.
-        redraw |= update_direct_light_fields(&map, &mut objects, &brightness_tables);
+        let redraw: bool = update_direct_light_fields(&map, &mut objects, &brightness_tables) || ((objects[0].light_source).0 != old_flashlight_state) || ((objects[0].x != old_player_position.0) || (objects[0].y != old_player_position.1));
         
         // Draw all objects in objects list into composition terminal.
         // If we use the conditional, the screen only gets redrawn whenever an object light-field changes. This means that nothing
         // appears to happen if the player turns the light off! Need to fix this.
-        //if redraw == true { render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, &mut light_field, &brightness_tables); }
-        render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, &mut light_field, &brightness_tables);
+        if redraw == true {
+            old_flashlight_state = (objects[0].light_source).0;
+            old_player_position = (objects[0].x, objects[0].y);
+            render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, &mut light_field);
+        }
         
         // Display the contents of the root terminal.
         root.flush();
