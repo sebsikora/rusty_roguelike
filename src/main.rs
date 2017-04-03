@@ -37,7 +37,7 @@ const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
 const RAYCAST_DISTANCE_STEP: f64 = 0.05;
 const RAYCAST_FINENESS: i32 = 1;
-const REFLECTION_LEVEL: i32 = 4;
+const REFLECTION_LEVEL: i32 = 8;
 const REFLECTION_BRIGHTNESS_SCALING: f64 = 1.0;
 const RAYCAST_INFO: bool = false;
 const TRANSPARENT_OBJECTS_REFLECTIVE: bool = false;
@@ -171,7 +171,7 @@ impl BrightnessTables {
         }
         let brightness_index: i32 = ((dist - 1.0) * 20.0) as i32;
         let power_index: i32 = (coll * 2.0) as i32; 
-        let brightness_scaling = self.brightness_tables[power_index as usize][brightness_index as usize];
+        let brightness_scaling: f64 = self.brightness_tables[power_index as usize][brightness_index as usize];
         brightness_scaling
     }
     
@@ -187,14 +187,14 @@ impl BrightnessTables {
         }
         let distance_index: i32 = (bright * 1000.0) as i32;
         let power_index: i32 = (coll * 2.0) as i32; 
-        let distance = self.distance_tables[power_index as usize][distance_index as usize];
+        let distance: f64 = self.distance_tables[power_index as usize][distance_index as usize];
         distance
     }
     
     // Read inverse-tangent table.
     pub fn read_tangent_table(&self, ratio: &f64) -> f64 {
         let index: i32 = ((*ratio / 0.0001) as i32) + 1000000;
-        let angle_degrees = self.tangent_tables[index as usize];
+        let angle_degrees: f64 = self.tangent_tables[index as usize];
         angle_degrees
     }
 }
@@ -213,7 +213,7 @@ struct ChildReflection {
     collimation: f64,
 }
 
-// Rect object methods.
+// Child reflection object methods.
 impl ChildReflection {
     pub fn new(diffuse: bool, x: i32, y: i32, float_offset: (f64, f64), face: i32, direction: f64, intensity_profile: (f64, f64, f64), angular_sweep: f64, collimation: f64) -> ChildReflection {
         ChildReflection {
@@ -266,7 +266,7 @@ impl LightFieldObject {
         
         // Determine light-field dimensions and create empty LightField. Also, the determine_light_field_dimensions() function will
         // create a zeroed-out index field of the same dimensions.
-        let light_field_result = self.determine_light_field_dimensions(&map_light_coords, intensity_profile, brightness_tables, collimation);
+        let light_field_result: ((i32, i32), (i32, i32), LightField) = self.determine_light_field_dimensions(&map_light_coords, intensity_profile, brightness_tables, collimation);
         self.map_offset_start = light_field_result.0;
         self.map_offset_end = light_field_result.1;
         self.light_field = light_field_result.2;
@@ -277,17 +277,19 @@ impl LightFieldObject {
         let field_light_coords: (f64, f64) = ((map_light_coords.0 as f64) + 0.5 + pos_offset.0 - (self.map_offset_start.0 as f64), (map_light_coords.1 as f64) + 0.5 + pos_offset.1 - (self.map_offset_start.1 as f64));
         
         // Identify target tiles along periphery of LightField.
-        let map_targets_list = self.locate_perimeter_targets(&self.map_offset_start, &self.map_offset_end);
+        let map_targets_list: Vec<(f64, f64)> = self.locate_perimeter_targets(&self.map_offset_start, &self.map_offset_end);
         
-        // Shadowcasting begins! Cast rays, modify LightField accordingly 
-        let mut candidate_reflections = self.raycast(map, &map_targets_list, &map_light_coords, &field_light_coords, direction, &beam_sweep, intensity_profile, collimation, brightness_tables);
+        // First pass raycasting begins! Cast rays, modify LightField accordingly, and store any resulting candidate child reflections.
+        let mut candidate_reflections: Vec<ChildReflection> = self.raycast(map, &map_targets_list, &map_light_coords, &field_light_coords, direction, &beam_sweep, intensity_profile, collimation, brightness_tables);
         
+        // Now, if reflections are enabled we begin iteratively filtering and then raycasting progressively deeper levels of child reflections.
         let mut reflection_level_index: i32 = 0;
-        
         while reflection_level_index < REFLECTION_LEVEL {
             if (&candidate_reflections).len() > 0 {
                 // If there are any resulting candidate child reflections, filter them.
                 let final_reflections = self.filter_candidate_reflections(candidate_reflections);
+                
+                // If the flag to list some info about reflections is set then display it.
                 if RAYCAST_INFO == true {
                     println!("---------------------------- Level {} --------------------------", reflection_level_index + 1);
                     println!("{} filtered reflections.", (&final_reflections).len());
@@ -295,35 +297,40 @@ impl LightFieldObject {
                         println!("{} {}   {} {}   {} {}", reflection.x, reflection.y, reflection.face, reflection.direction, (reflection.float_offset).0, (reflection.float_offset).1);
                     }
                 }
-                // Initialise vector to hold all upcoming sub-children.
-                let mut results_this_level = vec![];
                 
                 // Iterate through and raycast each child reflection. For each, store all of the resulting sub-child reflections.
+                let mut results_this_level = vec![];
                 for reflection in &final_reflections {
-                    
+                    // Re-calculate appropriate float offset, starting field co-ordinates, and ray targets list for this child reflection.
                     let r_pos_offset: (f64, f64) = if reflection.diffuse == false {
                         reflection.float_offset
                     } else {
                         self.rotate_float_offset(&(reflection.float_offset), &(reflection.direction))
                     };
                     let r_field_light_coords: (f64, f64) = ((reflection.x as f64) + 0.5 + r_pos_offset.0 - (self.map_offset_start.0 as f64), (reflection.y as f64) + 0.5 + r_pos_offset.1 - (self.map_offset_start.1 as f64));
-                    let reflection_light_field_result = self.determine_light_field_dimensions(&(reflection.x, reflection.y), &(reflection.intensity_profile), brightness_tables, &(reflection.collimation));
-                    let map_reflection_offset_start = reflection_light_field_result.0;
-                    let map_reflection_offset_end = reflection_light_field_result.1;
-                    let map_reflection_targets_list = self.locate_perimeter_targets(&map_reflection_offset_start, &map_reflection_offset_end);
+                    let reflection_light_field_result: ((i32, i32), (i32, i32), LightField) = self.determine_light_field_dimensions(&(reflection.x, reflection.y), &(reflection.intensity_profile), brightness_tables, &(reflection.collimation));
+                    let map_reflection_offset_start: (i32, i32) = reflection_light_field_result.0;
+                    let map_reflection_offset_end: (i32, i32) = reflection_light_field_result.1;
+                    let map_reflection_targets_list: Vec<(f64, f64)> = self.locate_perimeter_targets(&map_reflection_offset_start, &map_reflection_offset_end);
                     
-                    let results_this_child = self.raycast(map, &map_reflection_targets_list, &(reflection.x, reflection.y), &r_field_light_coords, &(reflection.direction), &(reflection.angular_sweep), &(reflection.intensity_profile), &reflection.collimation, brightness_tables);
+                    // Raycast for this child reflection.
+                    let results_this_child: Vec<ChildReflection> = self.raycast(map, &map_reflection_targets_list, &(reflection.x, reflection.y), &r_field_light_coords, &(reflection.direction), &(reflection.angular_sweep), &(reflection.intensity_profile), &reflection.collimation, brightness_tables);
+                    
+                    // Store resulting candidate child reflections in a buffer for this level. Once we've worked through all of the pending
+                    // child reflections, this buffer will be passed back to 'the top' for filtering.
                     for result in results_this_child {
                         results_this_level.push(result);
                     }
                 }
+                
+                // Pass all candidate child reflections back to the top for filtering and subsequent raycasting.
                 candidate_reflections = results_this_level;
             }
             reflection_level_index += 1;
         }
     }
     
-    // Raycast around light-source. For each ray, store any resulting candidate reflections. Once rays have been cast at all target
+    // Raycast around light-source in direction of input targets. For each ray, store any resulting candidate reflections. Once rays have been cast at all targets return overall list of candidate child reflections.
     fn raycast(&mut self, map: &Map, map_targets_list: &Vec<(f64, f64)>, map_light_coords: &(i32, i32), field_light_coords: &(f64, f64), direction: &f64, beam_sweep: &f64, intensity_profile: &(f64, f64, f64), collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
         let mut candidate_reflections = vec![];
         'target: for current_target in map_targets_list {
@@ -336,7 +343,7 @@ impl LightFieldObject {
                 let field_target_dist_comps: (f64, f64) = ((field_target_coords.0 - field_light_coords.0), (field_target_coords.1 - field_light_coords.1));
                 
                 // Determine target alpha angle, corrected for light-source direction.
-                let alpha_angle = self.determine_alpha_angle(&field_target_dist_comps, direction, brightness_tables);
+                let alpha_angle: f64 = self.determine_alpha_angle(&field_target_dist_comps, direction, brightness_tables);
                 
                 // Check if we need to cast a ray (Is target tile within angular field of view?)
                 if !((alpha_angle <= *beam_sweep) || (alpha_angle >= (360.0 - *beam_sweep))) {
@@ -403,26 +410,26 @@ impl LightFieldObject {
                 let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(&field_ray_coords);
                 if target_reflectivity == 0.0 {
                     // Create the diffuse reflected component.
-                    let diffuse_reflection_profile = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity));
+                    let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity));
                     candidate_reflection.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
                 }
                 if target_reflectivity == 1.0 {
                     // Create the reflective component.
-                    let reflective_reflection_profile = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
-                    let reflective_reflection_direction = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                    let reflective_reflection_sweep = *beam_sweep;
-                    let reflective_reflection_collimation = *collimation;
+                    let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
+                    let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
+                    let reflective_reflection_sweep: f64 = *beam_sweep;
+                    let reflective_reflection_collimation: f64 = *collimation;
                     candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
                 }
                 if (target_reflectivity > 0.0) && (target_reflectivity < 1.0) {
                     // Create the diffuse reflected component.
-                    let diffuse_reflection_profile = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - target_reflectivity));
+                    let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - target_reflectivity));
                     candidate_reflection.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
                     // Create the reflective component.
-                    let reflective_reflection_profile = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
-                    let reflective_reflection_direction = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                    let reflective_reflection_sweep = *beam_sweep;
-                    let reflective_reflection_collimation = *collimation + ((1.0 - target_reflectivity) * (90.0 - *collimation));
+                    let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
+                    let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
+                    let reflective_reflection_sweep: f64 = *beam_sweep;
+                    let reflective_reflection_collimation: f64 = *collimation + ((1.0 - target_reflectivity) * (90.0 - *collimation));
                     candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
                 }
                 break 'ray;
@@ -441,10 +448,10 @@ impl LightFieldObject {
                     if TRANSPARENT_OBJECTS_REFLECTIVE == true {
                         // Create candidate reflective reflection.
                         let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(&field_ray_coords);
-                        let reflection_direction = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                        let reflection_brightness = self.determine_ray_brightness(&field_ray_distance, &ray_brightness, &parent_intensity, collimation, brightness_tables);
-                        let reflection_sweep = *beam_sweep;
-                        let reflection_collimation = *collimation;
+                        let reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
+                        let reflection_brightness: (f64, f64, f64) = self.determine_ray_brightness(&field_ray_distance, &ray_brightness, &parent_intensity, collimation, brightness_tables);
+                        let reflection_sweep: f64 = *beam_sweep;
+                        let reflection_collimation: f64 = *collimation;
                         candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflection_direction, reflection_brightness, reflection_sweep, reflection_collimation));
                     }
                     continue 'ray;
@@ -1239,7 +1246,6 @@ fn integrate_light_fields(objects: &[Object], light_field: &mut LightField) {
                                         continue 'x_loop;
                                     }
                                     if (object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].0 > 0.0) || (object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].1 > 0.0) || (object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].2 > 0.0) {
-                                        // NOTE - also append current object index to illumination-index field at this location.
                                         light_field[x as usize][y as usize].0 = light_field[x as usize][y as usize].0 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].0;
                                         light_field[x as usize][y as usize].1 = light_field[x as usize][y as usize].1 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].1;
                                         light_field[x as usize][y as usize].2 = light_field[x as usize][y as usize].2 + object_light_field[(x - map_start_offset.0) as usize][(y - map_start_offset.1) as usize].2;
@@ -1333,7 +1339,7 @@ fn main() {
     for new_room in rooms {
         // Add corner lights pointing inwards diagonally.
         let directions: (f64, f64, f64, f64) = (45.0, 135.0, 225.0, 315.0);
-        let torch_brightness: (f64, f64, f64) = (0.6, 0.6, 0.0);
+        let torch_brightness: (f64, f64, f64) = (0.3, 0.3, 0.0);
         let torch_angle: f64 = 45.0;
         let torch_collimation: f64 = 70.0;
         let float_offset: (f64, f64) = (0.0, 0.0);
