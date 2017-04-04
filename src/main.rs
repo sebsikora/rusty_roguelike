@@ -41,6 +41,7 @@ const REFLECTION_LEVEL: i32 = 8;
 const REFLECTION_BRIGHTNESS_SCALING: f64 = 1.0;
 const RAYCAST_INFO: bool = false;
 const TRANSPARENT_OBJECTS_REFLECTIVE: bool = false;
+const TRANSPARENT_OBJECTS_REFRACT: bool = false;
 
 // Define a 'Map' datatype, in the form of a Vector of Vectors of Tiles.
 type Map = Vec<Vec<Tile>>;
@@ -54,16 +55,17 @@ struct Tile {
     explored: bool,
     color: (f64, f64, f64),
     reflectivity: f64,
+    refractive_index: f64,
 }
 
 // Define Tile object methods.
 impl Tile {
     pub fn empty() -> Self {
-        Tile{blocked: false, block_sight: false, explored: false, color: COLOR_GROUND, reflectivity: 0.0}
+        Tile{blocked: false, block_sight: false, explored: false, color: COLOR_GROUND, reflectivity: 0.0, refractive_index: 1.000277}
     }
     
     pub fn wall() -> Self {
-        Tile{blocked: true, block_sight: true, explored: false,  color: COLOR_WALL, reflectivity: 0.25}
+        Tile{blocked: true, block_sight: true, explored: false,  color: COLOR_WALL, reflectivity: 0.25, refractive_index: 0.0}
     }
 }
 
@@ -303,8 +305,11 @@ impl LightFieldObject {
                 for reflection in &final_reflections {
                     // Re-calculate appropriate float offset, starting field co-ordinates, and ray targets list for this child reflection.
                     let r_pos_offset: (f64, f64) = if reflection.diffuse == false {
+                        // If it is *not* a diffuse reflection, just leave the value calculated appropriately at averaging-time in place.
                         reflection.float_offset
                     } else {
+                        // If it *is* a diffuse reflection, then it will have have had it's direction appropriately set at averaging-time,
+                        // but will need it's float_offset re-calculating accordingly from the set default (0.5, 0), just like eg the player.
                         self.rotate_float_offset(&(reflection.float_offset), &(reflection.direction))
                     };
                     let r_field_light_coords: (f64, f64) = ((reflection.x as f64) + 0.5 + r_pos_offset.0 - (self.map_offset_start.0 as f64), (reflection.y as f64) + 0.5 + r_pos_offset.1 - (self.map_offset_start.1 as f64));
@@ -354,13 +359,13 @@ impl LightFieldObject {
                 let field_target_distance: f64 = ((field_target_dist_comps.0).powi(2) + (field_target_dist_comps.1).powi(2)).sqrt();
                 let field_dist_step: f64 = RAYCAST_DISTANCE_STEP;
                 let field_dist_increments: f64 = field_target_distance / field_dist_step;
-                let field_dist_step_comps: (f64, f64) = ((field_target_dist_comps.0 / field_dist_increments), (field_target_dist_comps.1 / field_dist_increments));
+                let mut field_dist_step_comps: (f64, f64) = ((field_target_dist_comps.0 / field_dist_increments), (field_target_dist_comps.1 / field_dist_increments));
                 
                 let mut field_ray_distance: f64 = 0.0;
                 let mut field_ray_coords: (f64, f64) = *field_light_coords;
                 let mut field_ray_brightness: (f64, f64, f64) = *intensity_profile;
                 
-                for reflection in self.cast_ray(map, &map_light_coords, (field_dist_increments as i32), &mut field_ray_distance, field_dist_step, field_dist_step_comps, &mut field_ray_coords, &mut field_ray_brightness, intensity_profile, beam_sweep, collimation, brightness_tables) {
+                for reflection in self.cast_ray(map, &map_light_coords, (field_dist_increments as i32), &mut field_ray_distance, field_dist_step, &mut field_dist_step_comps, &mut field_ray_coords, &mut field_ray_brightness, intensity_profile, beam_sweep, collimation, brightness_tables) {
                     candidate_reflections.push(reflection);
                 }
         }
@@ -368,9 +373,9 @@ impl LightFieldObject {
     }
     
     // Cast a single ray. En-route, light up tiles that do not block or block sight, light up (and stop at) tiles which block and block sight, and light up and become attenuated by tiles that block but do not block sight. If any reflections are generated en-route, these are returned in a vector.
-    fn cast_ray(&mut self, map: &Map, map_light_coords: &(i32, i32), field_dist_increments: i32, field_ray_distance: &mut f64, field_dist_step: f64, field_dist_step_comps: (f64, f64), field_ray_coords: &mut(f64, f64), field_ray_brightness: &(f64, f64, f64), intensity_profile: &(f64, f64, f64), beam_sweep: &f64, collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
+    fn cast_ray(&mut self, map: &Map, map_light_coords: &(i32, i32), field_dist_increments: i32, field_ray_distance: &mut f64, field_dist_step: f64, field_dist_step_comps: &mut (f64, f64), field_ray_coords: &mut (f64, f64), field_ray_brightness: &(f64, f64, f64), intensity_profile: &(f64, f64, f64), beam_sweep: &f64, collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
         let mut ray_brightness: (f64, f64, f64) = *field_ray_brightness;
-        let mut candidate_reflection = vec![];
+        let mut candidate_reflections = vec![];
         let mut parent_intensity: (f64, f64, f64) = *intensity_profile;
         'ray: for increment in 0..field_dist_increments {
             field_ray_coords.0 += field_dist_step_comps.0;
@@ -386,13 +391,14 @@ impl LightFieldObject {
             if (ray_brightness.0 < 0.00393) && (ray_brightness.1 < 0.00393) && (ray_brightness.2 < 0.00393) {
                 break 'ray;
             }
-            // ---------------------------------------------------------------------------------------------------
             
+            // Grab where the ray is right now in field and map co-ordinates.
             let field_write_coords: (i32, i32) = ((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32);
             let map_check_coords: (i32, i32) = (((field_ray_coords.0).trunc() as i32) + self.map_offset_start.0, ((field_ray_coords.1).trunc() as i32) + self.map_offset_start.1);
             
             // Check if ray has left the LightField or Map.
             if (field_write_coords.0 < 0) || (field_write_coords.0 > (self.map_offset_end.0 - self.map_offset_start.0)) || (field_write_coords.1 < 0) || (field_write_coords.1 > (self.map_offset_end.1 - self.map_offset_start.1)) || (map_check_coords.0 < 0) || (map_check_coords.0 > (MAP_WIDTH - 1)) || (map_check_coords.1 < 0) || (map_check_coords.1 > (MAP_HEIGHT - 1)) {
+                // If we have, stop this ray.
                 break 'ray;
             }
                         
@@ -402,66 +408,96 @@ impl LightFieldObject {
                     continue 'ray;
                 }
                 
-                // Or, it blocks sight, and is *not* within the light source location. Light the tile up and stop.
+                // Or, it blocks sight, and is *not* within the light source location. Light the tile up, create diffuse and reflective
+                // reflections as appropriate, and then stop this ray.
                 self.overwrite_tile(&ray_brightness, &field_write_coords);
-                
-                // Create candidate reflection(s).
-                let target_reflectivity: f64 = map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity;
-                let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(&field_ray_coords);
-                if target_reflectivity == 0.0 {
-                    // Create the diffuse reflected component.
-                    let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity));
-                    candidate_reflection.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
-                }
-                if target_reflectivity == 1.0 {
-                    // Create the reflective component.
-                    let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
-                    let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                    let reflective_reflection_sweep: f64 = *beam_sweep;
-                    let reflective_reflection_collimation: f64 = *collimation;
-                    candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
-                }
-                if (target_reflectivity > 0.0) && (target_reflectivity < 1.0) {
-                    // Create the diffuse reflected component.
-                    let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - target_reflectivity));
-                    candidate_reflection.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
-                    // Create the reflective component.
-                    let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
-                    let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                    let reflective_reflection_sweep: f64 = *beam_sweep;
-                    let reflective_reflection_collimation: f64 = *collimation + ((1.0 - target_reflectivity) * (90.0 - *collimation));
-                    candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
-                }
+                candidate_reflections = self.opaque_interaction(map, &map_check_coords, &field_ray_coords, &field_dist_step_comps, &ray_brightness, beam_sweep, collimation, brightness_tables);
                 break 'ray;
             } else {
                 // The ray location does *not* block sight...
                 if !map[map_check_coords.0 as usize][map_check_coords.1 as usize].blocked {
-                    // ...and does not block motion either.
+                    // ...and does not block motion either, light up the tile and continue this ray.
                     self.overwrite_tile(&ray_brightness, &field_write_coords);
                     continue 'ray;
                 } else {
-                    // ...but does block motion, so it's a transparent solid. Light it up, and have it 'filter' (modulate)
-                    // the ray as it passes through according to it's color.
+                    // ...but does block motion, so it's a transparent solid. Light it up, have it 'filter' (modulate)
+                    // the ray as it passes through according to it's color, refract the ray path according to the ratio of
+                    // refractive indices and create an appropriate incident reflection.
                     self.overwrite_tile(&ray_brightness, &field_write_coords);
-                    // Modulate the parent intensity (color) profile according to the color of the transparent tile.
-                    parent_intensity = self.attenuate_ray(&parent_intensity, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
-                    if TRANSPARENT_OBJECTS_REFLECTIVE == true {
-                        // Create candidate reflective reflection.
-                        let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(&field_ray_coords);
-                        let reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, &field_dist_step_comps, brightness_tables);
-                        let reflection_brightness: (f64, f64, f64) = self.determine_ray_brightness(&field_ray_distance, &ray_brightness, &parent_intensity, collimation, brightness_tables);
-                        let reflection_sweep: f64 = *beam_sweep;
-                        let reflection_collimation: f64 = *collimation;
-                        candidate_reflection.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflection_direction, reflection_brightness, reflection_sweep, reflection_collimation));
+                    for current_candidate_reflection in self.transparent_interaction(map, &map_check_coords, &field_ray_coords, field_ray_distance, field_dist_step_comps, &ray_brightness, &mut parent_intensity, beam_sweep, collimation, brightness_tables) {
+                        candidate_reflections.push(current_candidate_reflection);
                     }
                     continue 'ray;
                 }
             }
         }
-        candidate_reflection
+        candidate_reflections
+    }
+    
+    fn transparent_interaction(&self, map: &Map, map_check_coords: &(i32, i32), field_ray_coords: &(f64, f64), field_ray_distance: &f64, field_dist_step_comps: &mut(f64, f64), ray_brightness: &(f64, f64, f64), parent_intensity: &mut(f64, f64, f64), beam_sweep: &f64, collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
+        let mut candidate_reflections = vec![];
+        
+        // Need to determine here if we have i) just entered the tile, ii) just left the tile or iii) done neither. 
+        let entered: bool = ((field_ray_coords.0 - field_dist_step_comps.0).trunc() as i32 != map_check_coords.0) || ((field_ray_coords.1 - field_dist_step_comps.1).trunc() as i32 != map_check_coords.1);
+        let exited: bool = ((field_ray_coords.0 + field_dist_step_comps.0).trunc() as i32 != map_check_coords.0) || ((field_ray_coords.1 + field_dist_step_comps.1).trunc() as i32 != map_check_coords.1);
+        
+        if entered && !exited {
+            // If we have just entered the tile, modulate the ray brightness profile (as it is re-calculated anew from the lookup table value 
+            // and parent brightness profile each tick, we need to modify the parent brightness profile by reference), refract the ray direction 
+            // (field_dist_step_comps) by reference, and if transparent reflections are enabled we also need to create an incident reflection 
+            // (this is just a normal reflection creation step). 
+            *parent_intensity = self.attenuate_ray(parent_intensity, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
+            if TRANSPARENT_OBJECTS_REFRACT == true {
+                // Going to need to do something along the lines of the self.reflect_direction() method, whereby there are four cases for
+                // the four sides, each with two sub cases for rays hitting from either aspect. In each we do the appropriate trig to work
+                // out the new ray direction components.
+            }
+            if TRANSPARENT_OBJECTS_REFLECTIVE == true {
+                // Create candidate reflective reflection.
+                let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(field_ray_coords);
+                let reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, field_dist_step_comps, brightness_tables);
+                let reflection_brightness: (f64, f64, f64) = self.determine_ray_brightness(field_ray_distance, ray_brightness, parent_intensity, collimation, brightness_tables);
+                let reflection_sweep: f64 = *beam_sweep;
+                let reflection_collimation: f64 = *collimation;
+                candidate_reflections.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflection_direction, reflection_brightness, reflection_sweep, reflection_collimation));
+            }
+        }
+        candidate_reflections
+    }
+    
+    fn opaque_interaction(&self, map: &Map, map_check_coords: &(i32, i32), field_ray_coords: &(f64, f64), field_dist_step_comps: &(f64, f64), ray_brightness: &(f64, f64, f64), beam_sweep: &f64, collimation: &f64, brightness_tables: &BrightnessTables) -> Vec<ChildReflection> {
+        let mut candidate_reflections = vec![];
+        // Create candidate reflection(s).
+        let target_reflectivity: f64 = map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity;
+        let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(field_ray_coords);
+        if target_reflectivity == 0.0 {
+            // Create the diffuse reflected component.
+            let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity));
+            candidate_reflections.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
+        }
+        if target_reflectivity == 1.0 {
+            // Create the reflective component.
+            let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
+            let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, field_dist_step_comps, brightness_tables);
+            let reflective_reflection_sweep: f64 = *beam_sweep;
+            let reflective_reflection_collimation: f64 = *collimation;
+            candidate_reflections.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
+        }
+        if (target_reflectivity > 0.0) && (target_reflectivity < 1.0) {
+            // Create the diffuse reflected component.
+            let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - target_reflectivity));
+            candidate_reflections.push(ChildReflection::new(true, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, diffuse_reflection_direction, diffuse_reflection_profile, 90.0, 90.0));
+            // Create the reflective component.
+            let reflective_reflection_profile: (f64, f64, f64) = self.attenuate_ray(&ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &1.0);
+            let reflective_reflection_direction: f64 = self.reflect_direction(&diffuse_reflection_direction, field_dist_step_comps, brightness_tables);
+            let reflective_reflection_sweep: f64 = *beam_sweep;
+            let reflective_reflection_collimation: f64 = *collimation + ((1.0 - target_reflectivity) * (90.0 - *collimation));
+            candidate_reflections.push(ChildReflection::new(false, map_check_coords.0, map_check_coords.1, (0.5, 0.0), diffuse_reflection_face, reflective_reflection_direction, reflective_reflection_profile, reflective_reflection_sweep, reflective_reflection_collimation));
+        }
+        candidate_reflections
     }
 
-    fn filter_candidate_reflections(&mut self, candidate_reflections: Vec<ChildReflection>) -> Vec<ChildReflection> {
+    fn filter_candidate_reflections(&self, candidate_reflections: Vec<ChildReflection>) -> Vec<ChildReflection> {
         let mut unique_diffuse_reflections = vec![];    
         let mut unique_reflective_reflections = vec![];    
         
@@ -633,7 +669,7 @@ impl LightFieldObject {
         reflected_direction
     }
     
-    fn determine_collision_face(&mut self, field_ray_coords: &(f64, f64)) -> (i32, f64) {
+    fn determine_collision_face(&self, field_ray_coords: &(f64, f64)) -> (i32, f64) {
         let field_ray_coordinates: (f64, f64) = (field_ray_coords.0 - (field_ray_coords.0).trunc(), field_ray_coords.1 - (field_ray_coords.1).trunc());
         let field_tile_coordinates: (f64, f64) = (0.0, 0.0);
         let mut face: i32 = 0;
@@ -658,7 +694,7 @@ impl LightFieldObject {
         (face, direction)
     }
     
-    fn attenuate_ray(&mut self, ray_intensity: &(f64, f64, f64), tile_color: &(f64, f64, f64), scale_factor: &f64) -> (f64, f64, f64) {
+    fn attenuate_ray(&self, ray_intensity: &(f64, f64, f64), tile_color: &(f64, f64, f64), scale_factor: &f64) -> (f64, f64, f64) {
         let trb = ray_intensity.0 * tile_color.0 * *scale_factor * REFLECTION_BRIGHTNESS_SCALING;
         let tgb = ray_intensity.1 * tile_color.1 * *scale_factor * REFLECTION_BRIGHTNESS_SCALING;
         let tbb = ray_intensity.2 * tile_color.2 * *scale_factor * REFLECTION_BRIGHTNESS_SCALING;
@@ -677,7 +713,7 @@ impl LightFieldObject {
         }
     }
     
-    fn check_adjacent(&mut self, map_target_position: &(i32, i32), map_light_source_position: &(i32, i32)) -> bool {
+    fn check_adjacent(&self, map_target_position: &(i32, i32), map_light_source_position: &(i32, i32)) -> bool {
         let mut adjacent: bool = false;
         if (((map_target_position.0 - map_light_source_position.0) == 0) && ((map_target_position.1 - map_light_source_position.1).abs() == 1)) || (((map_target_position.0 - map_light_source_position.0).abs() == 1) && ((map_target_position.1 - map_light_source_position.1) == 0)) {
             adjacent = true;
@@ -685,7 +721,7 @@ impl LightFieldObject {
         adjacent
     }
     
-    fn determine_ray_brightness(&mut self, ray_distance_travelled: &f64, ray_intensity_profile: &(f64, f64, f64), parent_intensity_profile: &(f64, f64, f64), collimation: &f64, brightness_tables: &BrightnessTables) -> (f64, f64, f64) {
+    fn determine_ray_brightness(&self, ray_distance_travelled: &f64, ray_intensity_profile: &(f64, f64, f64), parent_intensity_profile: &(f64, f64, f64), collimation: &f64, brightness_tables: &BrightnessTables) -> (f64, f64, f64) {
         // Reduce ray brightness -----------------------------------------------------------------------------
         let mut modulation_distance: f64 = *ray_distance_travelled;
         if modulation_distance < 1.0 {
@@ -709,7 +745,7 @@ impl LightFieldObject {
         (intensity_profile.0, intensity_profile.1, intensity_profile.2)
     }
 
-    fn determine_alpha_angle(&mut self, field_light_target_dist_comps: &(f64, f64), direction: &f64, brightness_tables: &BrightnessTables) -> f64 {
+    fn determine_alpha_angle(&self, field_light_target_dist_comps: &(f64, f64), direction: &f64, brightness_tables: &BrightnessTables) -> f64 {
         // Determine which quadrant the target is in with respect to alpha = 0 deg and calculate
         // the corresponding target alpha angle.
         let mut alpha_angle: f64 = 0.0;
@@ -755,7 +791,7 @@ impl LightFieldObject {
         alpha_angle
     }
     
-    fn determine_light_field_dimensions(&mut self, position: &(i32, i32), intensity_profile: &(f64, f64, f64), brightness_tables: &BrightnessTables, collimation: &f64) -> ((i32, i32), (i32, i32), LightField) {
+    fn determine_light_field_dimensions(&self, position: &(i32, i32), intensity_profile: &(f64, f64, f64), brightness_tables: &BrightnessTables, collimation: &f64) -> ((i32, i32), (i32, i32), LightField) {
         // Determine maximum intensity.
         let max_intensity: f64 = (intensity_profile.0).max(intensity_profile.1).max(intensity_profile.2);
         
@@ -832,7 +868,6 @@ impl LightFieldObject {
     fn locate_perimeter_targets(&self, map_offset_start: &(i32, i32), &map_offset_end: &(i32, i32)) -> Vec<(f64, f64)> {
         let mut targets_list = vec![];
         let raycast_spacing: f64 = 1.0/(RAYCAST_FINENESS as f64);
-        
         // (min, min) corner point.
         targets_list.push(((map_offset_start.0 as f64) + (1.0 - (raycast_spacing * 0.5)), (map_offset_start.1 as f64) + (1.0 - (raycast_spacing * 0.5))));
         // (min) row.
@@ -841,7 +876,6 @@ impl LightFieldObject {
                 targets_list.push(((x_ind as f64) + (0.5 * raycast_spacing) + (raycast_spacing * (subray_index as f64)), (map_offset_start.1 as f64) + (1.0 - (raycast_spacing * 0.5))));
             }
         }
-        
         // (max, min) corner point.
         targets_list.push(((map_offset_end.0 as f64) + (raycast_spacing * 0.5), (map_offset_start.1 as f64) + (1.0 - (raycast_spacing * 0.5))));
         // (max) column.
@@ -850,7 +884,6 @@ impl LightFieldObject {
                 targets_list.push(((map_offset_end.0 as f64) + (raycast_spacing * 0.5), (y_ind as f64) + (0.5 * raycast_spacing) + (raycast_spacing * (subray_index as f64))));
             }
         }
-        
         // (max, max) corner point.
         targets_list.push(((map_offset_end.0 as f64) + (raycast_spacing * 0.5), (map_offset_end.1 as f64) + (raycast_spacing * 0.5)));;
         // (max) row.
@@ -859,7 +892,6 @@ impl LightFieldObject {
                 targets_list.push(((x_ind as f64) + (0.5 * raycast_spacing) + (raycast_spacing * (subray_index as f64)), (map_offset_end.1 as f64) + (raycast_spacing * 0.5)));
             }
         }
-        
         // (min, max) corner point.
         targets_list.push(((map_offset_start.0 as f64) + (1.0 - (0.5 * raycast_spacing)), (map_offset_end.1 as f64) + (0.5 * raycast_spacing)));
         // (min) column.
@@ -868,7 +900,6 @@ impl LightFieldObject {
                 targets_list.push(((map_offset_start.0 as f64) + (1.0 - (0.5 * raycast_spacing)), (y_ind as f64) + (0.5 * raycast_spacing) + (raycast_spacing * (subray_index as f64))));
             }
         }
-        
         targets_list
     }
 }
@@ -1047,18 +1078,22 @@ fn make_map() -> (Map, (i32, i32), Vec<Rect>) {
             map[(new_x - 1) as usize][(new_y - 1) as usize].block_sight = false;
             map[(new_x - 1) as usize][(new_y - 1) as usize].color = (1.0, 0.0, 0.0);
             map[(new_x - 1) as usize][(new_y - 1) as usize].reflectivity = 1.0;
+            map[(new_x - 1) as usize][(new_y - 1) as usize].refractive_index = 2.0;
             map[(new_x + 1) as usize][(new_y - 1) as usize].blocked = true;
             map[(new_x + 1) as usize][(new_y - 1) as usize].block_sight = false;
             map[(new_x + 1) as usize][(new_y - 1) as usize].color = (0.0, 1.0, 0.0);
             map[(new_x + 1) as usize][(new_y - 1) as usize].reflectivity = 1.0;
+            map[(new_x + 1) as usize][(new_y - 1) as usize].refractive_index = 2.0;
             map[(new_x - 1) as usize][(new_y + 1) as usize].blocked = true;
             map[(new_x - 1) as usize][(new_y + 1) as usize].block_sight = false;
             map[(new_x - 1) as usize][(new_y + 1) as usize].color = (0.0, 0.0, 1.0);
             map[(new_x - 1) as usize][(new_y + 1) as usize].reflectivity = 1.0;
+            map[(new_x - 1) as usize][(new_y + 1) as usize].refractive_index = 2.0;
             map[(new_x + 1) as usize][(new_y + 1) as usize].blocked = true;
             map[(new_x + 1) as usize][(new_y + 1) as usize].block_sight = false;
             map[(new_x + 1) as usize][(new_y + 1) as usize].color = (1.0, 0.0, 1.0);
             map[(new_x + 1) as usize][(new_y + 1) as usize].reflectivity = 1.0;
+            map[(new_x + 1) as usize][(new_y + 1) as usize].refractive_index = 2.0;
             
             if rooms.is_empty() {
                 // Then this is the first room, so we set the player start
@@ -1332,7 +1367,7 @@ fn main() {
     
     // Instantiate the objects vector, and create the player and cat buddy objects and append them.
     let mut objects = vec![];
-    objects.push(Object::new(player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (1.0, 1.0, 1.0), 30.0, 60.0, (0.5, 0.0), true)));
+    objects.push(Object::new(player_x, player_y, 0.0, '@', COLOR_PLAYER, (true, (0.6, 0.6, 0.6), 30.0, 60.0, (0.4, 0.0), true)));
     objects.push(Object::new(player_x - 1, player_y-1, 0.0, 'c', COLOR_CAT_BUDDY, (false, (0.0, 0.0, 0.0), 0.0, 0.0, (0.4, 0.0), true)));
     
     // Populate created rooms with light objects.
