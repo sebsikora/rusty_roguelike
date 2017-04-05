@@ -25,8 +25,8 @@ const COLOR_GROUND: (f64, f64, f64) = (0.1, 0.1, 0.1);
 const COLOR_PLAYER: (f64, f64, f64) = (1.0, 1.0, 0.0);
 const COLOR_CAT_BUDDY: (f64, f64, f64) = (1.0, 0.502, 0.0);
 
-const ROOM_MAX_SIZE: i32 = 30;
-const ROOM_MIN_SIZE: i32 = 10;
+const ROOM_MAX_SIZE: i32 = 40;
+const ROOM_MIN_SIZE: i32 = 20;
 const MAX_ROOMS: i32 = 30;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
@@ -35,11 +35,11 @@ const TORCH_RADIUS: i32 = 0;        // 0 = unlimited.
 
 const AMBIENT_ILLUMINATION: (f64, f64, f64) = (0.0, 0.0, 0.0);
 const MIN_NOT_VISIBLE_ILLUMINATION: (f64, f64, f64) = (0.015, 0.015, 0.015);
-const RAYCAST_DISTANCE_STEP: f64 = 0.05;
+const RAYCAST_DISTANCE_STEP: f64 = 0.1;
 const RAYCAST_FINENESS: i32 = 1;
-const REFLECTION_LEVEL: i32 = 8;
+const REFLECTION_LEVEL: i32 = 3;
 const REFLECTION_BRIGHTNESS_SCALING: f64 = 1.0;
-const RAYCAST_INFO: bool = false;
+const RAYCAST_INFO: bool = true;
 const TRANSPARENT_OBJECTS_REFLECTIVE: bool = false;
 const TRANSPARENT_OBJECTS_REFRACT: bool = false;
 
@@ -295,9 +295,6 @@ impl LightFieldObject {
                 if RAYCAST_INFO == true {
                     println!("---------------------------- Level {} --------------------------", reflection_level_index + 1);
                     println!("{} filtered reflections.", (&final_reflections).len());
-                    for reflection in &final_reflections {
-                        println!("{} {}   {} {}   {} {}", reflection.x, reflection.y, reflection.face, reflection.direction, (reflection.float_offset).0, (reflection.float_offset).1);
-                    }
                 }
                 
                 // Iterate through and raycast each child reflection. For each, store all of the resulting sub-child reflections.
@@ -313,6 +310,13 @@ impl LightFieldObject {
                         self.rotate_float_offset(&(reflection.float_offset), &(reflection.direction))
                     };
                     let r_field_light_coords: (f64, f64) = ((reflection.x as f64) + 0.5 + r_pos_offset.0 - (self.map_offset_start.0 as f64), (reflection.y as f64) + 0.5 + r_pos_offset.1 - (self.map_offset_start.1 as f64));
+                    
+                    // If the flag to list some info about reflections is set then display it.
+                    if RAYCAST_INFO == true {
+                        println!("{} {}   {} {}   {} {}", reflection.x, reflection.y, reflection.face, reflection.direction, r_pos_offset.0, r_pos_offset.1);
+                    }
+                    
+                    // Prepare for raycasting.
                     let reflection_light_field_result: ((i32, i32), (i32, i32), LightField) = self.determine_light_field_dimensions(&(reflection.x, reflection.y), &(reflection.intensity_profile), brightness_tables, &(reflection.collimation));
                     let map_reflection_offset_start: (i32, i32) = reflection_light_field_result.0;
                     let map_reflection_offset_end: (i32, i32) = reflection_light_field_result.1;
@@ -469,7 +473,19 @@ impl LightFieldObject {
         let mut candidate_reflections = vec![];
         // Create candidate reflection(s).
         let target_reflectivity: f64 = map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity;
-        let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(field_ray_coords);
+        //let (diffuse_reflection_face, diffuse_reflection_direction) = self.determine_collision_face(field_ray_coords);
+        let answer = self.determine_collision_face_2(&true, &((field_ray_coords.0).trunc() as i32, (field_ray_coords.1).trunc() as i32), field_ray_coords, field_dist_step_comps);
+        let diffuse_reflection_face = answer.4;
+        let diffuse_reflection_direction = answer.5;
+        
+        // Test to see if we are about to cast reflections in the direction of a tile which blocks sight. If so, return early from the
+        // opaque_interaction() function, spawning no candidate reflections. This catches any reflections erroneously created facing inwards
+        // within a tile.
+        if ((diffuse_reflection_face == 0) && (map[(map_check_coords.0 + 1) as usize][map_check_coords.1 as usize].block_sight == true)) || ((diffuse_reflection_face == 1) && (map[map_check_coords.0 as usize][(map_check_coords.1 + 1) as usize].block_sight == true)) || ((diffuse_reflection_face == 2) && (map[(map_check_coords.0 - 1) as usize][map_check_coords.1 as usize].block_sight == true)) || ((diffuse_reflection_face == 3) && (map[map_check_coords.0 as usize][(map_check_coords.1 - 1) as usize].block_sight == true)) {
+            return vec![]
+        }
+        
+        // Create appropriate diffuse or reflective reflections.
         if target_reflectivity == 0.0 {
             // Create the diffuse reflected component.
             let diffuse_reflection_profile: (f64, f64, f64) = self.attenuate_ray(ray_brightness, &(map[map_check_coords.0 as usize][map_check_coords.1 as usize]).color, &(1.0 - map[map_check_coords.0 as usize][map_check_coords.1 as usize].reflectivity));
@@ -694,6 +710,90 @@ impl LightFieldObject {
         (face, direction)
     }
     
+    fn determine_collision_face_2(&self, entry: &bool, field_write_coords: &(i32, i32), field_ray_coords: &(f64, f64), field_dist_step_comps: &(f64, f64)) -> (bool, bool, bool, bool, i32, f64) {
+        // Grab tile corner co-ordinates in field space.
+        let corner_0_coords: (f64, f64) = ((field_write_coords.0 as f64) + 1.0, field_write_coords.1 as f64);
+        let corner_1_coords: (f64, f64) = ((field_write_coords.0 as f64) + 1.0, (field_write_coords.1 as f64) + 1.0);
+        let corner_2_coords: (f64, f64) = (field_write_coords.0 as f64, (field_write_coords.1 as f64) + 1.0);
+        let corner_3_coords: (f64, f64) = (field_write_coords.0 as f64, field_write_coords.1 as f64);
+        
+        // Set up M and C for each of the four sides.
+        let side_0_gradient: f64 = 10000000.0;
+        let side_1_gradient: f64 = 0.0;
+        let side_2_gradient: f64 = 10000000.0;
+        let side_3_gradient: f64 = 0.0;
+        // c =  y - mx
+        let side_0_intercept: f64 = corner_0_coords.1 - (side_0_gradient * corner_0_coords.0);
+        let side_1_intercept: f64 = corner_1_coords.1 - (side_1_gradient * corner_1_coords.0);
+        let side_2_intercept: f64 = corner_2_coords.1 - (side_2_gradient * corner_2_coords.0);
+        let side_3_intercept: f64 = corner_3_coords.1 - (side_3_gradient * corner_3_coords.0);
+        
+        // Get ray path segment gradient.
+        let mut ray_start_coords: (f64, f64) = (0.0, 0.0);
+        let mut ray_end_coords: (f64, f64) = (0.0, 0.0);
+        if *entry == true {
+            ray_start_coords = (field_ray_coords.0 - field_dist_step_comps.0, field_ray_coords.1 - field_dist_step_comps.1);
+            ray_end_coords = *field_ray_coords;
+        } else {
+            ray_start_coords = *field_ray_coords;
+            ray_end_coords = (field_ray_coords.0 + field_dist_step_comps.0, field_ray_coords.1 + field_dist_step_comps.1);
+        }
+        let ray_x_diff: f64 = field_dist_step_comps.0;
+        let ray_y_diff: f64 = field_dist_step_comps.1;
+        // Careful to catch vertical rays and replace them with 'very steep' rays.
+        let ray_gradient: f64 = if (ray_x_diff <= 0.0000001) && (ray_x_diff >= 0.0) {
+            ray_y_diff / 0.0000001
+        } else if (ray_x_diff >= -0.0000001) && (ray_x_diff < 0.0) {
+            ray_y_diff / -0.0000001
+        } else {
+            ray_y_diff / ray_x_diff
+        };
+        
+        // Get ray path segment intercept.
+        let ray_intercept: f64 = ray_start_coords.1 - (ray_gradient * ray_start_coords.0);
+        
+        // Get notional intercept x-co-cordinates.
+        // x = (c2 - c1)/(m1 - m2) where 1 is the ray and 2 is the side.
+        let intercept_x_0: f64 = (side_0_intercept - ray_intercept)/(ray_gradient - side_0_gradient);
+        let intercept_x_1: f64 = (side_1_intercept - ray_intercept)/(ray_gradient - side_1_gradient);
+        let intercept_x_2: f64 = (side_2_intercept - ray_intercept)/(ray_gradient - side_2_gradient);
+        let intercept_x_3: f64 = (side_3_intercept - ray_intercept)/(ray_gradient - side_3_gradient);
+        
+        let intercept_y_0: f64 = (side_0_gradient * intercept_x_0) + side_0_intercept;
+        let intercept_y_1: f64 = (side_1_gradient * intercept_x_1) + side_1_intercept;
+        let intercept_y_2: f64 = (side_2_gradient * intercept_x_2) + side_2_intercept;
+        let intercept_y_3: f64 = (side_3_gradient * intercept_x_3) + side_3_intercept;
+        
+        // Test to see if notional intercept x-co-ordinates lie within ray path segment x-range.
+        // Any which do indicate that side intersects the ray path segment.
+        let intersects_with_0: bool = (((ray_x_diff > 0.0) && (intercept_x_0 >= ray_start_coords.0) && (intercept_x_0 <= ray_end_coords.0)) || ((ray_x_diff <= 0.0) && (intercept_x_0 <= ray_start_coords.0) && (intercept_x_0 >= ray_end_coords.0))) && (intercept_y_0 >= corner_0_coords.1) && (intercept_y_0 <= corner_1_coords.1);
+        let intersects_with_1: bool = (((ray_x_diff >= 0.0) && (intercept_x_1 >= ray_start_coords.0) && (intercept_x_1 <= ray_end_coords.0)) || ((ray_x_diff <= 0.0) && (intercept_x_1 <= ray_start_coords.0) && (intercept_x_1 >= ray_end_coords.0))) && (intercept_x_1 >= corner_2_coords.0) && (intercept_x_1 <= corner_1_coords.0);
+        let intersects_with_2: bool = (((ray_x_diff >= 0.0) && (intercept_x_2 >= ray_start_coords.0) && (intercept_x_2 <= ray_end_coords.0)) || ((ray_x_diff <= 0.0) && (intercept_x_2 <= ray_start_coords.0) && (intercept_x_2 >= ray_end_coords.0))) && (intercept_y_2 <= corner_2_coords.1) && (intercept_y_2 >= corner_3_coords.1);
+        let intersects_with_3: bool = (((ray_x_diff >= 0.0) && (intercept_x_3 >= ray_start_coords.0) && (intercept_x_3 <= ray_end_coords.0)) || ((ray_x_diff <= 0.0) && (intercept_x_3 <= ray_start_coords.0) && (intercept_x_3 >= ray_end_coords.0))) && (intercept_x_3 >= corner_3_coords.0) && (intercept_x_3 <= corner_0_coords.0);
+        let mut face: i32 = 0;
+        let mut direction: f64 = 0.0;
+        if intersects_with_0 == true {
+            face = 0;
+            direction = 0.0;
+        } else {
+            if intersects_with_1 == true {
+                face = 1;
+                direction = 90.0;
+            } else {
+                if intersects_with_2 == true {
+                    face = 2;
+                    direction = 180.0;
+                } else {
+                    if intersects_with_3 == true {
+                        face = 3;
+                        direction = 270.0;
+                    }
+                }
+            }
+        }
+        (intersects_with_0, intersects_with_1, intersects_with_2, intersects_with_3, face, direction)
+    }
+    
     fn attenuate_ray(&self, ray_intensity: &(f64, f64, f64), tile_color: &(f64, f64, f64), scale_factor: &f64) -> (f64, f64, f64) {
         let trb = ray_intensity.0 * tile_color.0 * *scale_factor * REFLECTION_BRIGHTNESS_SCALING;
         let tgb = ray_intensity.1 * tile_color.1 * *scale_factor * REFLECTION_BRIGHTNESS_SCALING;
@@ -795,10 +895,8 @@ impl LightFieldObject {
         // Determine maximum intensity.
         let max_intensity: f64 = (intensity_profile.0).max(intensity_profile.1).max(intensity_profile.2);
         
-        // Determine the map and field space beam radius according to the highest intensity component.
-        // The origin of the 'magic number' comes from the fact that if the reference brightness is defined
-        // at a distance of 1.0, then the maximum radius corresponds to the square root of the ratio of initial and 
-        // minimum brightnesses. In this case the minimum brightness is 1/255 (8-bit color) = 0.0039215...
+        // Determine radius of light-source according to max component brightness and collimation by reference to
+        // a pre-computed lookup table.
         let float_light_radius: f64 = brightness_tables.read_distance_table(&max_intensity, collimation);
         
         // Make sure that integer radius is rounded-up, this makes sure we always catch all of the dark
@@ -811,7 +909,7 @@ impl LightFieldObject {
         
         // Grab light-source co-ordinates in map space and with the radius calculate the
         // co-ordinates of the light fields bounding box (in map space). We store these along
-        // with the light field in the LightFieldObject, as it is what we use to know where to
+        // with the LightField in the LightFieldObject, as it is what we use to know where to
         // composit the light field into the overall map light field at rendering time.
         let map_light_coords: (i32, i32) = (position.0, position.1);
         let mut map_offset_start: (i32, i32) = ((map_light_coords.0 - int_light_radius), (map_light_coords.1 - int_light_radius));
